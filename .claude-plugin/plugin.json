@@ -1,0 +1,11 @@
+{
+  "name": "truetake",
+  "displayName": "truetake",
+  "version": "0.1.0",
+  "description": "Real agent takes, turned into honest demo videos: record fresh Claude Code takes, keep every one as evidence, and build a narrated video with verbatim agent text, code cards, step captions and a privacy gate.",
+  "author": { "name": "Tyler (@tyler-void)", "url": "https://github.com/tyler-void" },
+  "homepage": "https://github.com/tyler-void/truetake",
+  "repository": "https://github.com/tyler-void/truetake",
+  "license": "MIT",
+  "keywords": ["demo", "video", "screencast", "asciicast", "evidence", "headless"]
+}

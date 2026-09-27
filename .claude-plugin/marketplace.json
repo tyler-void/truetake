@@ -1,0 +1,12 @@
+{
+  "name": "truetake",
+  "description": "truetake: real agent takes, turned into honest demo videos.",
+  "owner": { "name": "Tyler (@tyler-void)", "url": "https://github.com/tyler-void" },
+  "plugins": [
+    {
+      "name": "truetake",
+      "source": ".",
+      "description": "Record fresh Claude Code takes, keep them as evidence, and build an honest narrated demo video."
+    }
+  ]
+}
