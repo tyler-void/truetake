@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+
+# truetake work directories and outputs: takes are evidence, keep them next to your project, not here
+.truetake/
+hello-demo/
+*.mp4
+*.gif
+*.cast
