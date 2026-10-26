@@ -19,6 +19,7 @@ One `truetake.yaml` drives eight subcommands:
 |---|---|
 | `truetake init` | Write an annotated `truetake.yaml` |
 | `truetake record` | Run N fresh takes per scene with `claude -p` in a sandbox; keep every stream, stderr, git status and diff |
+| `truetake import` | Bring in an existing `claude -p` stream-json run (and its `--resume` follow-ups) as a take, with its source and checksums; `--transcript` adds hook rewrites and final usage |
 | `truetake select` | List a scene's takes, or choose one with a reason the report quotes |
 | `truetake render` | Take → asciicast → [agg](https://github.com/asciinema/agg) → video, with a code card and step captions timed from the cast; title cards and slides |
 | `truetake narrate` | One TTS clip per narration string: [Kokoro](https://huggingface.co/hexgrad/Kokoro-82M) locally (default) or Gemini |
@@ -132,6 +133,13 @@ segments:
 
 `truetake init` writes the full annotated version, with slides, the terminal size and font, MCP configs,
 hooks, isolation, email allowlists and frame spacing.
+
+For comparisons and benchmark demos, a scene can also take `followups` (prompts of a resumed session),
+`display_cwd`, `prompt_seconds`, `pacing` overrides, `annotate: {sizes, rewrites, usage, usage_bar}` (with
+top-level `usage_prices`), and a short `title` for the terminal header; a `pair` segment (`left`, `right`,
+`cols`, `rows`) shows two scenes side by side; title and slide segments take `hold` (seconds on screen when
+there is no narration). See [docs/honesty.md](docs/honesty.md) for what each one changes and how the report
+lists it.
 
 ## Pitfalls
 
