@@ -10,7 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import subprocess
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 import numpy as np
@@ -152,7 +152,7 @@ def selected_take(cfg: Config, scene: Segment) -> tuple[int, takes.Take, dict]:
     if meta["prompt"] != scene.prompt:
         raise RenderError(f"scene {scene.id}: the prompt in truetake.yaml changed after take {n} was recorded; "
                           "record new takes, or restore the prompt the take was recorded with")
-    return n, takes.parse(state.take_path(cfg, scene.id, n, ".jsonl")), meta
+    return n, takes.parse(state.take_path(cfg, scene.id, n, ".jsonl"), prompts=meta.get("prompts") or scene.prompts), meta
 
 
 def card_clip(cfg: Config, scene: Segment) -> Path | None:
@@ -181,10 +181,16 @@ def render_scene(cfg: Config, scene: Segment, lay: Layout, scanner: Scanner, log
     clip = card_clip(cfg, scene)
     card_speech_end = (0.2 + duration(clip)) if clip else 0.0
     first_tool_at = (card_speech_end + 0.3) if clip else (scene.card_hold if card else 0.0)
-    pacing = castmod.Pacing(first_tool_at=first_tool_at, hook_delay=2.5 if scene.captions else 0.9)
+    pacing = castmod.Pacing(first_tool_at=first_tool_at, hook_delay=2.5 if scene.captions else 0.9,
+                            prompt_max_seconds=scene.prompt_seconds,
+                            **{k: v for k, v in scene.pacing.items() if k != "reply_cps"})
+    label = scene.label if scene.label is not None else cfg.label
+    annotate = castmod.Annotate(**scene.annotate, prices=cfg.prices, price_label=cfg.price_label)
+    header = scene.title or label  # a scene's `title` is the short terminal header; `label` is the strip below
     c = castmod.fit(take, scene.prompt, str(scene.cwd), scene.visual_seconds, cols=t.cols, rows=t.rows,
-                    label=cfg.label, pacing=pacing,
-                    hook_path=scene.hook.after_read if scene.hook else None, hook_fallback=hook_fallback)
+                    label=header, pacing=pacing,
+                    hook_path=scene.hook.after_read if scene.hook else None, hook_fallback=hook_fallback,
+                    annotate=annotate, display_cwd=scene.display_cwd)
     if c.widest > t.cols:
         raise RenderError(f"scene {scene.id}: a line is {c.widest} columns wide, the terminal has {t.cols}; raise terminal.cols")
     cast_path = out / "scene.cast"
@@ -193,7 +199,8 @@ def render_scene(cfg: Config, scene: Segment, lay: Layout, scanner: Scanner, log
 
     # Privacy gate, before any video exists: everything this scene will show.
     shown = {f"{scene.id}/terminal": "\n".join(screen.screen_text(events, t.rows, t.cols)),
-             f"{scene.id}/captions": "\n".join(cap.text for cap in scene.captions)}
+             f"{scene.id}/captions": "\n".join(cap.text for cap in scene.captions),
+             f"{scene.id}/usage-bar": "\n".join(txt for _, txt in c.status)}
     if card:
         shown[f"{scene.id}/card"] = card.title + "\n" + scene.card.explain + "\n" + "\n".join(txt for _, txt in card.rows)
     _gate(scanner, shown)
@@ -201,21 +208,31 @@ def render_scene(cfg: Config, scene: Segment, lay: Layout, scanner: Scanner, log
     gif = out / "scene.gif"
     agg(cfg, cast_path, gif)
     label_file = out / "label.txt"
-    label_file.write_text(cfg.label, encoding="utf-8")
+    label_file.write_text(label, encoding="utf-8")
     mono = fonts.resolve(cfg.fonts, "mono", t.font_family)
     term_mp4 = out / "terminal.mp4"
     vf = (f"fps={cfg.fps},scale={lay.term_w}:{lay.term_h}:flags=lanczos,"
           f"pad={cfg.width}:{cfg.height}:{lay.term_x}:{lay.term_y}:color=0x1e1e2e")
-    if cfg.label:
-        vf += (f",drawtext=fontfile='{mono}':textfile='{label_file}':fontsize={round(26 * lay.scale)}:"
-               f"fontcolor=0xa6adc8:x=(w-tw)/2:y={cfg.height - round(44 * lay.scale)}")
+    if label:
+        fs = round(26 * min(lay.scale, cfg.width / 1920 * 1.2))  # smaller on a half-width pair canvas
+        nl = label.count("\n") + 1  # a label may have several lines; keep the last one off the frame edge
+        vf += (f",drawtext=fontfile='{mono}':textfile='{label_file}':fontsize={fs}:line_spacing={round(fs * 0.3)}:"
+               f"fontcolor=0xa6adc8:x=(w-tw)/2:y={cfg.height - round(18 * lay.scale) - nl * round(fs * 1.3)}")
+    # The usage bar: one drawtext per value, each shown from its request's moment until the next one.
+    bar_fs = round(30 * min(lay.scale, cfg.width / 1920 * 1.6))
+    for k, (t0, txt) in enumerate(c.status):
+        t1 = c.status[k + 1][0] if k + 1 < len(c.status) else 1e6
+        f = out / f"status-{k + 1}.txt"
+        f.write_text(txt, encoding="utf-8")
+        vf += (f",drawtext=fontfile='{mono}':textfile='{f}':fontsize={bar_fs}:fontcolor=0xfab387:"
+               f"x={lay.term_x + round(16 * lay.scale)}:y={round(52 * lay.scale)}:enable='between(t,{t0:.3f},{t1:.3f})'")
     ffmpeg("-i", str(gif), "-vf", vf + ",format=yuv420p", "-c:v", "libx264", "-crf", "18", "-r", str(cfg.fps), str(term_mp4))
     visual = duration(term_mp4)
 
     sched: dict = {"scene": scene.id, "take": n, "visual_seconds": round(visual, 3), "hook_source": hook_source,
                    "pacing": {k: (round(v, 2) if isinstance(v, float) else v) for k, v in asdict(c.pacing).items()},
                    "transforms": asdict(c.transforms), "widest_line": c.widest, "cols": t.cols,
-                   "marks": c.marks, "card": None, "captions": []}
+                   "marks": c.marks, "card": None, "captions": [], "usage_bar": c.status}
 
     filters, inputs = [f"[0:v]fps={cfg.fps},format=yuv420p[v0]"], ["-i", str(term_mp4)]
     last = "v0"
@@ -335,6 +352,42 @@ def render_still(cfg: Config, seg: Segment) -> Path:
     return png
 
 
+def half_config(cfg: Config, pair: Segment) -> Config:
+    """The configuration a scene inside a pair renders with: half the canvas width, the pair's terminal size."""
+    return replace(cfg, width=cfg.width // 2 // 2 * 2,
+                   terminal=replace(cfg.terminal, cols=pair.cols or cfg.terminal.cols, rows=pair.rows or cfg.terminal.rows))
+
+
+def render_pair(cfg: Config, pair: Segment, scanner: Scanner, log=print) -> dict:
+    """Two scenes side by side: each rendered on half the canvas with the pair's terminal size, then stacked.
+    The shorter side holds its last frame, so both sessions start together and each keeps its own pace."""
+    half = half_config(cfg, pair)
+    geo = calibrate(half)
+    lay = layout(half, geo)
+    sides = {}
+    for side in (pair.left, pair.right):
+        sides[side] = render_scene(half, cfg.segment(side), lay, scanner, log)
+    out = state.render_dir(cfg) / pair.id
+    out.mkdir(parents=True, exist_ok=True)
+    left, right = (state.render_dir(cfg) / x / "scene.mp4" for x in (pair.left, pair.right))
+    dl, dr = duration(left), duration(right)
+    visual = max(dl, dr)
+    w = half.width
+    ffmpeg("-i", str(left), "-i", str(right), "-filter_complex",
+           f"[0:v]tpad=stop_mode=clone:stop_duration={visual - dl + 0.1:.3f}[l];"
+           f"[1:v]tpad=stop_mode=clone:stop_duration={visual - dr + 0.1:.3f}[r];"
+           f"[l][r]hstack=inputs=2,pad={cfg.width}:{cfg.height}:0:0:color=0x1e1e2e,"
+           f"drawbox=x={w - 1}:y=0:w=2:h={cfg.height}:color=0x45475a:t=fill,format=yuv420p[v]",
+           "-map", "[v]", "-t", f"{visual:.3f}", "-an", "-c:v", "libx264", "-crf", "18", "-r", str(cfg.fps),
+           "-pix_fmt", "yuv420p", str(out / "scene.mp4"))
+    sched = {"pair": pair.id, "left": pair.left, "right": pair.right, "visual_seconds": round(visual, 3),
+             "left_seconds": round(dl, 3), "right_seconds": round(dr, 3), "card": None, "captions": [],
+             "half_width": w, "cols": half.terminal.cols, "rows": half.terminal.rows}
+    state.write_json(out / "schedule.json", sched)
+    log(f"  {pair.id}: pair {pair.left} | {pair.right}, {visual:.1f}s")
+    return {**sched, "sides": sides}
+
+
 def render(cfg: Config, only: list[str] | None = None, log=print) -> dict:
     scanner = Scanner.from_env(cfg.privacy.allow_emails)
     # Gate the configured texts first: narration, titles, captions, card explanations.
@@ -342,18 +395,26 @@ def render(cfg: Config, only: list[str] | None = None, log=print) -> dict:
     for s in cfg.segments:
         texts[f"{s.id}/narration"] = "\n".join(x for x in (s.card_narration, s.narration) if x)
         texts[f"{s.id}/title"] = "\n".join(x for x in (s.title, s.subtitle) if x)
+        if s.kind == "scene":
+            texts[f"{s.id}/label"] = s.label or ""
+            texts[f"{s.id}/display_cwd"] = s.display_cwd
+            texts[f"{s.id}/followups"] = "\n".join(s.followups)
     texts["label"] = cfg.label
     _gate(scanner, texts)
     geo = lay = None
     result = {}
     for seg in cfg.segments:
-        if only and seg.id not in only:
+        if only and seg.id not in only and not (seg.kind == "pair" and {seg.left, seg.right} & set(only)):
             continue
         if seg.kind == "scene":
+            if seg.in_pair:
+                continue  # rendered by its pair
             if lay is None:
                 geo = calibrate(cfg)
                 lay = layout(cfg, geo)
             result[seg.id] = render_scene(cfg, seg, lay, scanner, log)
+        elif seg.kind == "pair":
+            result[seg.id] = render_pair(cfg, seg, scanner, log)
         else:
             render_still(cfg, seg)
             log(f"  {seg.id}: {seg.kind} still")

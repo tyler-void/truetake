@@ -14,7 +14,7 @@ import yaml
 
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
-KINDS = ("title", "slide", "scene")
+KINDS = ("title", "slide", "scene", "pair")
 ENGINES = ("kokoro", "gemini", "none")
 ISOLATION = ("project", "bare")
 
@@ -65,6 +65,22 @@ class Segment:
     hook: Hook | None = None
     card: Card | None = None
     captions: list[Caption] = field(default_factory=list)
+    followups: list[str] = field(default_factory=list)  # scene: prompts sent with --resume after `prompt`
+    display_cwd: str = ""  # scene: shown in the terminal header instead of the real cwd (a counted transform)
+    annotate: dict = field(default_factory=dict)  # scene: {rewrites, sizes, usage} booleans, see cast.Annotate
+    label: str | None = None  # scene: overrides the video-wide label under this scene's terminal
+    left: str = ""  # pair: scene shown on the left half
+    right: str = ""  # pair: scene shown on the right half
+    cols: int | None = None  # pair: terminal columns of each half (scenes in a pair use the pair's size)
+    rows: int | None = None
+    in_pair: str = ""  # scene: id of the pair that shows it; such a scene is not assembled on its own
+    hold: float = 0.0  # title/slide: minimum seconds on screen (for videos without narration)
+    prompt_seconds: float | None = None  # scene: type each prompt in at most this many seconds
+    pacing: dict = field(default_factory=dict)  # scene: after_tool, after_text, end_hold (s) overrides
+
+    @property
+    def prompts(self) -> list[str]:
+        return [self.prompt, *self.followups]
 
 
 @dataclass
@@ -117,6 +133,8 @@ class Config:
     slides_pdf: Path | None
     segments: list[Segment]
     fonts: dict[str, str]
+    prices: dict[str, float] = field(default_factory=dict)  # $/MTok for usage annotations
+    price_label: str = "list price"
 
     def scenes(self) -> list[Segment]:
         return [s for s in self.segments if s.kind == "scene"]
@@ -174,6 +192,21 @@ def _scene(root: Path, raw: dict, where: str, seg: Segment) -> None:
     seg.clean_args = clean.split() if isinstance(clean, str) else [str(c) for c in clean]
     if hook := raw.get("hook"):
         seg.hook = Hook(after_read=str(_need(hook, "after_read", f"{where}.hook")), text_command=hook.get("text_command"))
+    seg.title = str(raw.get("title") or "")  # scene: short terminal header (default: the label)
+    seg.followups = [str(x) for x in raw.get("followups") or []]
+    seg.display_cwd = str(raw.get("display_cwd") or "")
+    seg.label = str(raw["label"]) if raw.get("label") is not None else None
+    ann = raw.get("annotate") or {}
+    unknown = set(ann) - {"rewrites", "sizes", "usage", "usage_bar"}
+    if unknown:
+        raise ConfigError(f"{where}.annotate: unknown key(s) {sorted(unknown)}; use rewrites, sizes, usage, usage_bar")
+    seg.prompt_seconds = float(raw["prompt_seconds"]) if raw.get("prompt_seconds") else None
+    pace = raw.get("pacing") or {}
+    allowed = {"after_tool", "after_text", "end_hold", "reply_cps"}
+    if set(pace) - allowed:
+        raise ConfigError(f"{where}.pacing: unknown key(s) {sorted(set(pace) - allowed)}; use {sorted(allowed)}")
+    seg.pacing = {k: float(v) for k, v in pace.items()}
+    seg.annotate = {k: bool(v) for k, v in ann.items()}
     if card := raw.get("card"):
         w = f"{where}.card"
         commit = str(_need(card, "commit", w))
@@ -250,6 +283,8 @@ def load(path: str | Path) -> Config:
         slides_pdf=_path(root, (raw.get("slides") or {}).get("pdf")),
         segments=[],
         fonts={k: str(v) for k, v in (raw.get("fonts") or {}).items()},
+        prices={k: float(v) for k, v in ((raw.get("usage_prices") or {}).get("per_mtok") or {}).items()},
+        price_label=str((raw.get("usage_prices") or {}).get("label") or "list price"),
     )
     if cfg.agent.isolation not in ISOLATION:
         raise ConfigError(f"agent.isolation must be one of {ISOLATION}")
@@ -271,14 +306,34 @@ def load(path: str | Path) -> Config:
             seg.title = str(_need(s, "title", where))
             seg.subtitle = str(s.get("subtitle") or "")
             seg.narration = str(s.get("narration") or "")
+            seg.hold = float(s.get("hold", 0))
         elif kind == "slide":
             if not cfg.slides_pdf:
                 raise ConfigError(f"{where}: a slide segment needs `slides.pdf`")
             seg.page = int(_need(s, "page", where))
             seg.narration = str(s.get("narration") or "")
+            seg.hold = float(s.get("hold", 0))
+        elif kind == "pair":
+            seg.left, seg.right = str(_need(s, "left", where)), str(_need(s, "right", where))
+            seg.narration = str(s.get("narration") or "")
+            seg.cols = int(s.get("cols", 92))
+            seg.rows = int(s.get("rows", 40))
         else:
             _scene(root, s, where, seg)
         cfg.segments.append(seg)
     if not cfg.segments:
         raise ConfigError("`segments` is empty")
+    by_id = {s.id: s for s in cfg.segments}
+    for p in (s for s in cfg.segments if s.kind == "pair"):
+        for side in (p.left, p.right):
+            sc = by_id.get(side)
+            if sc is None or sc.kind != "scene":
+                raise ConfigError(f"pair {p.id}: {side!r} is not a scene in this file")
+            if sc.in_pair:
+                raise ConfigError(f"pair {p.id}: scene {side!r} is already shown by pair {sc.in_pair!r}")
+            sc.in_pair = p.id
+        if p.left == p.right:
+            raise ConfigError(f"pair {p.id}: left and right must be different scenes")
+    if any(s.annotate.get("usage") or s.annotate.get("usage_bar") for s in cfg.scenes()) and not cfg.prices:
+        raise ConfigError("annotate.usage needs `usage_prices.per_mtok` (input, output, cache_write_5m, cache_write_1h, cache_read)")
     return cfg

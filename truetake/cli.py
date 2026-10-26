@@ -1,4 +1,4 @@
-"""truetake command line: init, record, select, render, narrate, assemble, check, report (and build)."""
+"""truetake command line: init, record, import, select, render, narrate, assemble, check, report (and build)."""
 from __future__ import annotations
 
 import argparse
@@ -95,6 +95,20 @@ def cmd_record(args) -> int:
     return 0
 
 
+def cmd_import(args) -> int:
+    from .importer import import_take
+
+    cfg = _cfg(args)
+    seg = cfg.segment(args.scene)
+    if seg.kind != "scene":
+        print(f"{seg.id} is not a scene", file=sys.stderr)
+        return 1
+    n = import_take(cfg, seg, [Path(x) for x in args.stream], args.source,
+                    Path(args.transcript) if args.transcript else None, Path(args.git) if args.git else None)
+    print(f"{seg.id}: imported as take {n} ({len(args.stream)} stream file(s))")
+    return 0
+
+
 def cmd_select(args) -> int:
     cfg = _cfg(args)
     seg = cfg.segment(args.scene)
@@ -105,10 +119,11 @@ def cmd_select(args) -> int:
     if args.list or args.take is None:
         sel = state.selection(cfg, seg.id)
         for n in nums:
-            s = takes.summary(takes.parse(state.take_path(cfg, seg.id, n, ".jsonl")))
             meta = state.read_json(state.take_path(cfg, seg.id, n, ".meta.json"))
+            s = takes.summary(takes.parse(state.take_path(cfg, seg.id, n, ".jsonl"), prompts=meta.get("prompts")))
             mark = " (chosen)" if sel and int(sel["take"]) == n else ""
-            print(f"take {n}{mark}: exit {meta['exit_code']}, {len(s['tool_calls'])} tool calls "
+            src = f" [imported: {meta['imported']['source']}]" if meta.get("imported") else ""
+            print(f"take {n}{mark}{src}: exit {meta['exit_code']}, {len(s['tool_calls'])} tool calls "
                   f"({', '.join(s['tool_calls'])}), hook context {s['hooks_with_context']}, reply {s['reply_chars']} chars, "
                   f"files changed: {', '.join(meta['files_changed']) or 'none'}")
             print(f"    first line: {s['final_text_start']}")
@@ -191,6 +206,14 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--scene", action="append", help="only this scene (repeatable)")
     s.add_argument("--takes", type=int, help="override the number of takes")
     s.set_defaults(fn=cmd_record)
+
+    s = sub.add_parser("import", help="import an existing claude -p stream-json run (and its resumed follow-ups) as a take")
+    s.add_argument("--scene", required=True)
+    s.add_argument("--stream", action="append", required=True, help="stream-json file; repeat in order for --resume follow-ups")
+    s.add_argument("--source", required=True, help="where the run comes from, quoted in the report (e.g. a run id)")
+    s.add_argument("--transcript", help="the session transcript (.jsonl), to keep PreToolUse rewrites")
+    s.add_argument("--git", help="a text file with the run's git status/diff, kept as evidence")
+    s.set_defaults(fn=cmd_import)
 
     s = sub.add_parser("select", help="list a scene's takes, or choose one with a reason")
     s.add_argument("--scene", required=True)

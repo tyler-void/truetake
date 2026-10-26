@@ -8,6 +8,11 @@ Honesty: every word the agent wrote appears verbatim, in order. The only changes
 Each change is counted in `Transforms` and listed in the report. Word-wrapping to the terminal width is
 layout, not a change. Tool calls become one-line headers; the hook's added context is shown verbatim as a
 highlighted block right after the tool call it followed.
+
+Opt-in annotations (`Annotate`) add measured facts from the same stream, each on its own dim line marked `⎿`/`·`
+so it cannot be mistaken for agent text: the command a PreToolUse hook substituted, how many characters of tool
+output the model received, and the context size and running list-price cost of each API request. Follow-up
+prompts of a resumed session (`--resume`) are shown like the first prompt.
 """
 from __future__ import annotations
 
@@ -27,6 +32,7 @@ OVERLAY1 = "\x1b[38;2;127;132;156m"
 SURFACE0_BG = "\x1b[48;2;49;50;68m"
 
 HOOK_HEADER = "⎿ PostToolUse hook added to the agent's context:"
+REWRITE_HEADER = "⎿ PreToolUse hook ran instead:"
 HOOK_NOTHING = "⎿ PostToolUse hook: nothing added"
 
 
@@ -41,6 +47,17 @@ class Pacing:
     after_text: float = 0.8
     end_hold: float = 3.0
     first_tool_at: float = 0.0  # hold the first tool call until this moment (room for a code card)
+    prompt_max_seconds: float | None = None  # type a long prompt faster so it takes at most this long
+
+
+@dataclass
+class Annotate:
+    rewrites: bool = False  # show the command a PreToolUse hook substituted
+    sizes: bool = False  # show how many characters of tool output the model received
+    usage: bool = False  # one line per API request: context size and running cost
+    usage_bar: bool = False  # a fixed status bar above the terminal (render draws it from Cast.status)
+    prices: dict = field(default_factory=dict)  # $/MTok: input, output, cache_write_5m, cache_write_1h, cache_read
+    price_label: str = "list price"
 
 
 @dataclass
@@ -48,6 +65,8 @@ class Transforms:
     markdown_markers_dropped: int = 0
     paths_relativized: int = 0
     home_replaced: int = 0
+    cwd_display: str = ""  # the working directory shown in the header, when the scene sets display_cwd
+    cwd_in_commands: int = 0  # the real working directory inside a shell command, written as display_cwd
 
 
 @dataclass
@@ -59,6 +78,7 @@ class Cast:
     marks: dict[str, float] = field(default_factory=dict)
     line_times: list[tuple[float, str]] = field(default_factory=list)  # (first visible character, plain text)
     reply_chars: int = 0
+    status: list = field(default_factory=list)  # (time, text): the usage bar's value from that moment on
     transforms: Transforms = field(default_factory=Transforms)
     pacing: Pacing | None = None
     widest: int = 0
@@ -135,7 +155,8 @@ def wrap_block(text: str, width: int, tr: Transforms | None = None, markdown: bo
             continue
         m = re.match(r"^(\s*(?:[-*]|\d+\.|>|\|)?\s*)", line)
         indent = " " * len(m.group(1)) if m else ""
-        out.extend(textwrap.wrap(line, width=width, subsequent_indent=indent, break_long_words=False,
+        # A token longer than the line (a long path in a narrow pane) is split across lines: layout, not a change.
+        out.extend(textwrap.wrap(line, width=width, subsequent_indent=indent, break_long_words=True,
                                  break_on_hyphens=False, replace_whitespace=False, drop_whitespace=True) or [""])
     return out
 
@@ -149,14 +170,24 @@ def relative(path: str, cwd: str, tr: Transforms | None = None) -> str:
     return scrub_home(path, tr)
 
 
-def header(step: Step, cwd: str, tr: Transforms | None = None) -> str:
+def show_cwd(text: str, cwd: str, display: str, tr: Transforms | None = None) -> str:
+    """The real working directory inside a command, written as the scene's display_cwd (a counted transform)."""
+    real = cwd.rstrip("/")
+    if display and real and real in text:
+        if tr:
+            tr.cwd_in_commands += text.count(real)
+        text = text.replace(real, display.rstrip("/") or ".")
+    return text
+
+
+def header(step: Step, cwd: str, tr: Transforms | None = None, display: str = "") -> str:
     name, inp = step.name, step.input
     if name == "Read":
         return f"Read {relative(str(inp.get('file_path', '')), cwd, tr)}"
     if name in ("Edit", "Write", "MultiEdit", "NotebookEdit"):
         return f"{name} {relative(str(inp.get('file_path') or inp.get('notebook_path') or ''), cwd, tr)}"
     if name == "Bash":
-        return f"Bash  {scrub_home(str(inp.get('description') or inp.get('command') or ''), tr)}"
+        return f"Bash  {scrub_home(show_cwd(str(inp.get('description') or inp.get('command') or ''), cwd, display, tr), tr)}"
     if name in ("Grep", "Glob"):
         return f"{name} {scrub_home(str(inp.get('pattern', '')), tr)}"
     if name == "ToolSearch":
@@ -168,26 +199,52 @@ def header(step: Step, cwd: str, tr: Transforms | None = None) -> str:
     return f"{name} {scrub_home(json.dumps(inp, ensure_ascii=False), tr)}"
 
 
+def request_cost(u: dict, prices: dict) -> float | None:
+    """List-price cost of one API request from its usage block; None without prices."""
+    if not prices:
+        return None
+    cc = u.get("cache_creation") or {}
+    w1 = cc.get("ephemeral_1h_input_tokens", 0)
+    w5 = cc.get("ephemeral_5m_input_tokens", u.get("cache_creation_input_tokens", 0) - w1)
+    return (u.get("input_tokens", 0) * prices.get("input", 0) + u.get("output_tokens", 0) * prices.get("output", 0)
+            + w5 * prices.get("cache_write_5m", 0) + w1 * prices.get("cache_write_1h", 0)
+            + u.get("cache_read_input_tokens", 0) * prices.get("cache_read", 0)) / 1e6
+
+
 def build(take: Take, prompt: str, cwd: str, *, cols: int, rows: int, label: str, pacing: Pacing,
-          hook_path: str | None = None, hook_fallback: str | None = None) -> Cast:
+          hook_path: str | None = None, hook_fallback: str | None = None, annotate: Annotate | None = None,
+          display_cwd: str = "") -> Cast:
     """Lay out one take as a terminal session. `hook_path`: the Read whose hook result is always shown, even
-    when the hook added nothing. `hook_fallback`: text to show there when the stream has no hook events."""
+    when the hook added nothing. `hook_fallback`: text to show there when the stream has no hook events.
+    `display_cwd`: shown in the header instead of the real working directory (counted as a transform)."""
     c = Cast(cols=cols, rows=rows, pacing=pacing)
     tr = c.transforms
+    an = annotate or Annotate()
     width = cols - 4
     version = take.init.get("claude_code_version")
-    head = " · ".join(x for x in [label, scrub_home(cwd, tr), f"claude -p (Claude Code {version})" if version else "claude -p"] if x)
+    shown_cwd = scrub_home(cwd, tr)
+    if display_cwd:
+        tr.cwd_display = display_cwd
+        shown_cwd = display_cwd
+    head = " · ".join(x for x in [label, shown_cwd, f"claude -p (Claude Code {version})" if version else "claude -p"] if x)
     c.line(head, pre=OVERLAY1)
     c.line()
     c.pause(0.6)
+
+    def prompt_cps(text: str) -> float:
+        if pacing.prompt_max_seconds:
+            return max(pacing.prompt_cps, len(text) / pacing.prompt_max_seconds)
+        return pacing.prompt_cps
+
     for i, pl in enumerate(textwrap.wrap(prompt, width=cols - 4)):
-        c.stream(pl, pacing.prompt_cps, indent="> " if i == 0 else "  ", pre=CYAN)
+        c.stream(pl, prompt_cps(prompt), indent="> " if i == 0 else "  ", pre=CYAN)
     c.line()
     c.pause(1.0)
 
     steps = take.steps
     shown_hooks = {s.tool_index for s in steps if s.kind == "hook" and s.text}
     first_tool = True
+    spent = 0.0
     texts = [i for i, s in enumerate(steps) if s.kind == "text"]
     last_text = texts[-1] if texts else None
     for i, s in enumerate(steps):
@@ -195,7 +252,7 @@ def build(take: Take, prompt: str, cwd: str, *, cols: int, rows: int, label: str
             if first_tool:
                 c.t = max(c.t, pacing.first_tool_at)
                 first_tool = False
-            h = header(s, cwd, tr)
+            h = header(s, cwd, tr, display_cwd)
             c.mark(f"tool:{s.name}")
             parts = textwrap.wrap(h, width=cols - 4, break_long_words=True) or [""]
             rel = relative(str(s.input.get("file_path", "")), cwd) if s.name == "Read" else None
@@ -204,6 +261,17 @@ def build(take: Take, prompt: str, cwd: str, *, cols: int, rows: int, label: str
             c.line(f"● {parts[0]}", pre=GREEN + BOLD)
             for more in parts[1:]:
                 c.line(f"  {more}", pre=BOLD)
+            if an.rewrites and s.rewrite:
+                c.mark("rewrite")
+                rw = textwrap.wrap(f"{REWRITE_HEADER} {scrub_home(show_cwd(s.rewrite, cwd, display_cwd, tr), tr)}",
+                                   width=cols - 4, break_long_words=True) or [""]
+                c.line(f"  {rw[0]}", pre=PEACH)
+                for more in rw[1:]:
+                    c.line(f"    {more}", pre=PEACH)
+            if an.sizes and s.result_chars is not None:
+                c.mark(f"size:{len(c.marks)}")
+                c.line(f"  ⎿ the model received {s.result_chars:,} characters" + (" (error)" if s.result_error else ""),
+                       pre=OVERLAY1)
             is_hook_read = bool(hook_path and rel == hook_path and f"hook-shown:{hook_path}" not in c.marks)
             has_hook = i in shown_hooks
             c.pause(pacing.hook_delay if (is_hook_read or has_hook) else pacing.after_tool)
@@ -217,6 +285,30 @@ def build(take: Take, prompt: str, cwd: str, *, cols: int, rows: int, label: str
                     c.mark("hook")
                     c.line(f"  {HOOK_NOTHING}", pre=PEACH)
                     c.pause(pacing.after_nothing)
+        elif s.kind == "prompt":
+            c.line()
+            c.mark(f"prompt:{s.name}")
+            for j, pl in enumerate(textwrap.wrap(s.text, width=cols - 4)):
+                c.stream(pl, prompt_cps(s.text), indent="> " if j == 0 else "  ", pre=CYAN)
+            c.line()
+            c.pause(1.0)
+        elif s.kind == "usage" and (an.usage or an.usage_bar):
+            u = s.usage
+            ctx = u.get("input_tokens", 0) + u.get("cache_read_input_tokens", 0) + u.get("cache_creation_input_tokens", 0)
+            cost = request_cost(u, an.prices)
+            if cost is not None:
+                spent += cost
+            c.mark(f"request:{u.get('request')}")
+            if an.usage:
+                line = f"· request {u.get('request')} · context {ctx:,} tokens"
+                if cost is not None:
+                    line += f" · ${spent:.3f} so far ({an.price_label})"
+                c.line(f"  {line}", pre=OVERLAY1)
+            if an.usage_bar:
+                bar = f"{u.get('request')} request{'s' if u.get('request') != 1 else ''} · context {ctx:,} tokens"
+                if cost is not None:
+                    bar += f" · ${spent:.3f}"
+                c.status.append((round(c.t, 3), bar))
         elif s.kind == "hook" and s.text:
             tool = steps[s.tool_index] if s.tool_index is not None else None
             if tool is not None and tool.name == "Read":
@@ -246,9 +338,11 @@ def _hook_block(c: Cast, text: str, width: int, pacing: Pacing, tr: Transforms) 
 
 
 def fit(take: Take, prompt: str, cwd: str, target: float, *, cols: int, rows: int, label: str, pacing: Pacing,
-        hook_path: str | None = None, hook_fallback: str | None = None) -> Cast:
+        hook_path: str | None = None, hook_fallback: str | None = None, annotate: Annotate | None = None,
+        display_cwd: str = "") -> Cast:
     """Choose the reply streaming speed so the scene lasts `target` seconds. Every pause keeps its length."""
-    kw = dict(cols=cols, rows=rows, label=label, hook_path=hook_path, hook_fallback=hook_fallback)
+    kw = dict(cols=cols, rows=rows, label=label, hook_path=hook_path, hook_fallback=hook_fallback, annotate=annotate,
+              display_cwd=display_cwd)
     probe = build(take, prompt, cwd, pacing=_with(pacing, reply_cps=1e9), **kw)
     room = target - probe.t
     if room < 1.0:

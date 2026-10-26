@@ -40,15 +40,30 @@ def report(cfg: Config, log=print) -> Path:
     L.append("")
 
     for seg in cfg.scenes():
-        L += [f"## Scene `{seg.id}`", "", f"**Prompt** (sent exactly as written, nothing added to the system prompt):", "",
-              f"> {seg.prompt}", ""]
+        L += [f"## Scene `{seg.id}`" + (f" (shown in pair `{seg.in_pair}`)" if seg.in_pair else ""), "",
+              f"**Prompt** (sent exactly as written, nothing added to the system prompt):", "", f"> {seg.prompt}", ""]
+        for k, fu in enumerate(seg.followups, 2):
+            L += [f"**Follow-up prompt {k}** (`--resume`):", "", f"> {fu}", ""]
         nums = state.recorded_takes(cfg, seg.id)
         sel = state.selection(cfg, seg.id)
-        if nums:
-            argvs = {n: state.read_json(state.take_path(cfg, seg.id, n, ".meta.json"))["argv"] for n in nums}
-            if all(a == argvs[nums[0]] for a in argvs.values()):
-                L += [f"**Agent command** (identical for all {len(nums)} takes):", "",
-                      "```", scrub_home(command_line(argvs[nums[0]])), "```", ""]
+        metas = {n: state.read_json(state.take_path(cfg, seg.id, n, ".meta.json")) for n in nums}
+        imported = {n: m["imported"] for n, m in metas.items() if m.get("imported")}
+        if imported:
+            L += ["**Imported takes** (existing runs, not recorded by truetake; streams kept verbatim):", ""]
+            for n, im in imported.items():
+                streams = ", ".join(f"`{x['file']}` sha256 `{x['sha256'][:12]}…`" for x in im["streams"])
+                tr = im.get("transcript")
+                L.append(f"- take {n}: source **{im['source']}**, model `{im.get('model')}`, {im['invocations']} invocation(s); "
+                         f"streams {streams}" + (f"; from the transcript (`{tr['sha256'][:12]}…`): {tr['pre_tool_use_rewrites']} "
+                                                 f"PreToolUse rewrite(s), final usage of {tr.get('final_usage_requests', 0)} request(s)"
+                                                 if tr else "; no transcript: usage annotations use the stream's provisional numbers"))
+            L.append("")
+        if nums and any(metas[n]["argv"] for n in nums):
+            argvs = {n: metas[n]["argv"] for n in nums if metas[n]["argv"]}
+            nums_rec = list(argvs)
+            if all(a == argvs[nums_rec[0]] for a in argvs.values()):
+                L += [f"**Agent command** (identical for all {len(nums_rec)} recorded takes):", "",
+                      "```", scrub_home(command_line(argvs[nums_rec[0]])), "```", ""]
             else:
                 L += ["**Agent command** (the takes differ):", ""]
                 for n, a in argvs.items():
@@ -58,7 +73,7 @@ def report(cfg: Config, log=print) -> Path:
               "|---|---|---|---|---|---|---|---|---|"]
         for n in nums:
             meta = state.read_json(state.take_path(cfg, seg.id, n, ".meta.json"))
-            s = takes.summary(takes.parse(state.take_path(cfg, seg.id, n, ".jsonl")))
+            s = takes.summary(takes.parse(state.take_path(cfg, seg.id, n, ".jsonl"), prompts=meta.get("prompts")))
             chosen = " **(chosen)**" if sel and int(sel["take"]) == n else ""
             L.append(f"| {n}{chosen} | {meta['exit_code']} | {meta['seconds']} | {len(s['tool_calls'])} | "
                      f"{s['hooks_with_context']} | {s['reply_chars']} | {', '.join(meta['files_changed']) or 'none'} | "
@@ -87,6 +102,10 @@ def report(cfg: Config, log=print) -> Path:
                   f"- Markdown markers dropped: {t['markdown_markers_dropped']}",
                   f"- tool-call paths made relative to the sandbox: {t['paths_relativized']}",
                   f"- home directory written as ~: {t['home_replaced']}",
+                  *([f"- working directory shown in the header as `{t['cwd_display']}`, and written that way inside "
+                     f"{t.get('cwd_in_commands', 0)} command(s)"] if t.get("cwd_display") else []),
+                  *([f"- annotations added from the stream (dim `⎿`/`·` lines, not agent text): "
+                     + ", ".join(k for k, v in seg.annotate.items() if v)] if any(seg.annotate.values()) else []),
                   f"- hook text source: {sch['hook_source']}"
                   + (" (the stream's hook_response)" if sch["hook_source"] == "stream" else
                      " (captured with hook.text_command, not from the stream)" if sch["hook_source"] == "command" else ""),
