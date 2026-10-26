@@ -126,9 +126,18 @@ def calibrate(cfg: Config) -> Geometry:
     return geo
 
 
+def label_fontsize(cfg: Config) -> int:
+    return round(26 * min(cfg.height / 1080, cfg.width / 1920 * 1.2))  # smaller on a half-width pair canvas
+
+
 def layout(cfg: Config, geo: Geometry) -> Layout:
     s = cfg.height / 1080
-    top, bottom, margin = round(116 * s), round(58 * s), round(24 * s)
+    # the label strip sits under the terminal: reserve room for its lines so it never covers terminal text
+    labels = [cfg.label] + [x.label for x in cfg.scenes() if x.label is not None]
+    lines = max((l.count("\n") + 1 for l in labels if l), default=0)
+    fs = label_fontsize(cfg)
+    bottom = max(round(58 * s), round(18 * s) + lines * round(fs * 1.3) + round(14 * s))
+    top, margin = round(116 * s), round(24 * s)
     avail_w, avail_h = cfg.width - 2 * margin, cfg.height - top - bottom
     k = min(avail_w / geo.gif_w, avail_h / geo.gif_h)
     tw, th = int(geo.gif_w * k) // 2 * 2, int(geo.gif_h * k) // 2 * 2
@@ -214,7 +223,7 @@ def render_scene(cfg: Config, scene: Segment, lay: Layout, scanner: Scanner, log
     vf = (f"fps={cfg.fps},scale={lay.term_w}:{lay.term_h}:flags=lanczos,"
           f"pad={cfg.width}:{cfg.height}:{lay.term_x}:{lay.term_y}:color=0x1e1e2e")
     if label:
-        fs = round(26 * min(lay.scale, cfg.width / 1920 * 1.2))  # smaller on a half-width pair canvas
+        fs = label_fontsize(cfg)
         nl = label.count("\n") + 1  # a label may have several lines; keep the last one off the frame edge
         vf += (f",drawtext=fontfile='{mono}':textfile='{label_file}':fontsize={fs}:line_spacing={round(fs * 0.3)}:"
                f"fontcolor=0xa6adc8:x=(w-tw)/2:y={cfg.height - round(18 * lay.scale) - nl * round(fs * 1.3)}")
