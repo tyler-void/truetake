@@ -173,14 +173,26 @@ Every frame is a pure function of film time, drawn with [Skia](https://skia.org)
 ```yaml
 film:
   output: film.mp4
-  duration: 20
+  duration: auto                          # or seconds
   theme: marginalia                       # or mocha, or {base: marginalia, accent: "#2E567A"}
   fonts: {serif: fonts/Literata.ttf, sans: fonts/Lexend.ttf}   # TTF/OTF files
-  pane: {source: codex, path: transcript-01.ndjson, title: ORCHESTRATOR, subtitle: practice match}
+  panes:                                  # one pane per thread; `pane:` for a single one
+    - {id: orchestrator, source: codex, path: transcript-01.ndjson, title: ORCHESTRATOR}
+    - {id: currency, source: codex, path: transcript-02.ndjson, title: SUBAGENT, subtitle: BUG-02}
   clock: {utc_offset: 7}
-  camera: [{at: 5, zoom: 1.3}, {at: 16, zoom: 1.0}]
+  beats:                                  # read these real-time windows; time-lapse the rest
+    - {from: "12:34:12", to: "12:34:24"}
+    - {from: "12:44:00", to: "12:44:10"}
+  camera: auto                            # or [{at: 5, zoom: 1.3, pane: currency}, {at: 16, zoom: 1.0}]
   score: score.wav                        # optional, from truetake-score
 ```
+
+Several panes share one timeline: items from every thread are merged in real-time order, so the clock is
+true for all of them. A pane opens when its thread starts, and the panes glide to the next layout: one
+centred, two side by side, then the first on the left with the others stacked. `beats` are the moments the
+film reads; between them it runs as a time-lapse, where lines land whole and the clock races, labelled
+"×N real time · time-lapse". `camera: auto` pushes in on the pane that writes the most during each beat,
+far enough that its text is near full size, and pulls back to the whole set for each time-lapse.
 
 The rules are the scene rules. Text comes from the source as recorded. Messages type at a little above
 reading speed and get a short beat, so a viewer can read them without the film stalling. A source with

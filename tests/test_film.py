@@ -113,9 +113,13 @@ def cfg_with(tmp_path, film):
 @pytest.mark.parametrize("film, match", [
     ("film: {output: demo.mp4, pane: {source: codex}}", "never overwrites"),
     ("film: {output: f.mp4, colour: red}", "unknown key"),
-    ("film: {output: f.mp4, camera: [{at: 2, zoom: 5}]}", "between 1.0 and 2.0"),
-    ("film: {output: f.mp4, camera: [{at: 5, zoom: 1.2}, {at: 2, zoom: 1.0}]}", "time order"),
-    ("film: {output: f.mp4, pacing: {typing: 3}}", "unknown key"),
+    ("film: {output: f.mp4}", "is required"),
+    ("film: {output: f.mp4, pane: {source: codex}, camera: [{at: 2, zoom: 5}]}", "between 1.0 and 2.0"),
+    ("film: {output: f.mp4, pane: {source: codex}, camera: [{at: 5, zoom: 1.2}, {at: 2, zoom: 1.0}]}", "time order"),
+    ("film: {output: f.mp4, pane: {source: codex}, camera: [{at: 5, zoom: 1.2, pane: nobody}]}", "no pane"),
+    ("film: {output: f.mp4, pane: {source: codex}, pacing: {typing: 3}}", "unknown key"),
+    ("film: {output: f.mp4, pane: {source: codex}, panes: [{source: codex}]}", "not both"),
+    ("film: {output: f.mp4, panes: [{id: a, source: codex}, {id: a, source: codex}]}", "unique"),
 ])
 def test_film_config_refuses(tmp_path, film, match):
     with pytest.raises(ConfigError, match=match):
@@ -125,7 +129,7 @@ def test_film_config_refuses(tmp_path, film, match):
 def test_film_preview_draws(tmp_path):
     pytest.importorskip("skia")
     from truetake.film import theme as thememod
-    from truetake.film.render import FilmSpec, render
+    from truetake.film.render import FilmSpec, PaneSpec, render
 
     src = codex(tmp_path, [ev(0, "ITEM.COMPLETED:AGENT_MESSAGE", "Hello."),
                            ev(1, "ITEM.STARTED:COMMAND_EXECUTION", input="make")])
@@ -135,6 +139,73 @@ def test_film_preview_draws(tmp_path):
     except Exception as e:  # no fontconfig on this machine
         pytest.skip(str(e))
     fs = FilmSpec(output=tmp_path / "f.mp4", width=640, height=360, fps=12, duration=3, cols=40, rows=10,
-                  title="T", subtitle="s", camera=[], utc_offset=7)
+                  panes=[PaneSpec("main", "T", "s")], camera=[], utc_offset=7)
     out = render(fs, s, th, sc.Pacing(), tmp_path, preview=[0.5, 2.0], log=lambda *_: None)
     assert len(out["preview"]) == 2
+
+
+def test_panes_share_one_clock_in_real_time_order(tmp_path):
+    a = tmp_path / "a"
+    b = tmp_path / "b"
+    a.mkdir(), b.mkdir()
+    orch = codex(a, [ev(0, "ITEM.COMPLETED:AGENT_MESSAGE", "Starting."),
+                     ev(30, "ITEM.STARTED:MCP_TOOL_CALL", name="mtm_team/submit")])
+    sub = codex(b, [ev(10, "ITEM.COMPLETED:AGENT_MESSAGE", "Fixed the bug.")])
+    s = sc.build_set([("orch", orch), ("sub", sub)], cols=60, home="")
+    first = {pid: next(l.t0 for l in ls if l.text) for pid, ls in s.panes.items()}
+    call = next(l for l in s.panes["orch"] if l.role == "call")
+    assert first["orch"] < first["sub"] < call.t0  # 0 s, 10 s, 30 s: one timeline for every pane
+    assert s.real_at(first["sub"]) == pytest.approx(10.0)
+    assert s.real_at(call.t0) == pytest.approx(30.0)
+
+
+def test_panes_need_timestamps(tmp_path):
+    untimed = sc.Source([sc.Item("message", "hi")], None, "take")
+    with pytest.raises(sc.FilmError, match="timestamps"):
+        sc.build_set([("a", untimed), ("b", untimed)], cols=60, home="")
+
+
+def test_outside_the_beats_the_film_is_a_time_lapse(tmp_path):
+    events = [ev(i, "ITEM.STARTED:COMMAND_EXECUTION", input=f"step {i}") for i in range(0, 50, 2)]
+    src = codex(tmp_path, events)
+    read = sc.build_set([("m", src)], cols=60, home="")
+    lapse = sc.build_set([("m", src)], cols=60, home="", beats=[(0.0, 4.0)])
+    assert lapse.end < read.end / 3  # most of it runs fast
+    late = [l for l in lapse.lines if l.text.startswith("$ step 4")]
+    assert all(l.cps == 0 for l in late if l.text != "$ step 4")  # outside the beat, lines land whole
+    assert lapse.lapses and lapse.rate_at(lapse.lapses[0][0] + 0.3, h=0.2) > 5  # and the clock races
+
+
+def test_wall_clock_beats(tmp_path):
+    from truetake.film import beats as parse_beats
+    import datetime as dt
+
+    t0 = dt.datetime(2026, 10, 29, 5, 34, 12, tzinfo=dt.timezone.utc)  # 12:34:12 at UTC+7
+    assert parse_beats([{"from": "12:35", "to": "12:36:12"}], t0, 7) == [(48.0, 120.0)]
+    assert parse_beats([{"from": 5, "to": 9}], None, None) == [(5.0, 9.0)]
+    with pytest.raises(ConfigError, match="utc_offset"):
+        parse_beats([{"from": "12:35", "to": "12:36"}], t0, None)
+
+
+def test_auto_camera_reads_close_and_lapses_wide(tmp_path):
+    pytest.importorskip("skia")
+    from truetake.film import theme as thememod
+    from truetake.film.render import FilmSpec, PaneSpec, Stage
+
+    a, b = tmp_path / "a", tmp_path / "b"
+    a.mkdir(), b.mkdir()
+    orch = codex(a, [ev(0, "ITEM.COMPLETED:AGENT_MESSAGE", "Starting the match: checking the checkout and the environment first."),
+                     *[ev(5 + i, "ITEM.STARTED:COMMAND_EXECUTION", input=f"poll {i}") for i in range(20)]])
+    sub = codex(b, [ev(30 + i * 0.2, "ITEM.STARTED:COMMAND_EXECUTION", input=f"fix {i}") for i in range(10)])
+    s = sc.build_set([("orch", orch), ("sub", sub)], cols=60, home="", beats=[(0.0, 3.0), (29.0, 33.0)])
+    try:
+        th = thememod.load("mocha", {}, "monospace")
+    except Exception as e:
+        pytest.skip(str(e))
+    fs = FilmSpec(output=tmp_path / "f.mp4", width=1280, height=720, fps=12, duration=s.end, cols=60, rows=12,
+                  panes=[PaneSpec("orch"), PaneSpec("sub")], camera=[], utc_offset=None, camera_auto=True)
+    Stage(fs, s, th)
+    pushes = [c for c in fs.camera if c.zoom > 1.0]
+    assert [c.pane for c in pushes] == ["orch", "sub"]  # each beat frames the pane that writes in it
+    for push in pushes:  # and every push ends in a wide shot
+        assert any(c.zoom == 1.0 and c.at > push.at for c in fs.camera)
