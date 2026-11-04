@@ -26,6 +26,7 @@ One `truetake.yaml` drives eight subcommands:
 | `truetake assemble` | Segments in order, one continuous audio track encoded once, loudness normalised, click test at every join, time budget enforced |
 | `truetake check` | Privacy gate over everything shown or spoken, a frame every N seconds plus contact sheets, card-cover and audio checks |
 | `truetake report` | `REPORT.md`: takes, the chosen one and why, every change to the agent's text, cards, captions, narration, checks |
+| `truetake film` | The film set (experimental): a real run (a Codex transcript, or a recorded take) drawn frame by frame on a themed stage, with smooth scrolling, a spring cursor, a camera and a real-time clock; exports a cue list for [truetake-score](https://github.com/tyler-void/truetake-score) |
 | `truetake callouts` | For a live talk: a large caption and a highlight box (or a zoomed copy of a terminal line) per beat, laid over the assembled video into a copy of the same length; `--preview` writes one frame per callout first |
 
 `truetake build` runs narrate, render, assemble, check and report in one go.
@@ -161,6 +162,46 @@ A box is a slide rectangle (`segment` + `rect` in output pixels), a title-card l
 terminal rows matching a regex (`scene` + `line`) or a scene's usage bar (`scene` + `status`). `truetake
 callouts --preview` writes one frame per callout and a contact sheet through the same filter graph as the
 full render; `truetake callouts` writes the copy and checks its length against the source to the frame.
+
+### The film set (experimental)
+
+`truetake film` draws a run as a film rather than a screen recording: a terminal pane on a stage, with the
+scroll gliding, new characters fading in, a cursor on a spring, and a camera that pushes in and breathes.
+Every frame is a pure function of film time, drawn with [Skia](https://skia.org)
+(`pip install "truetake[film]"`), so `--preview` frames are the frames of the full render.
+
+```yaml
+film:
+  output: film.mp4
+  duration: auto                          # or seconds
+  theme: marginalia                       # or mocha, or {base: marginalia, accent: "#2E567A"}
+  fonts: {serif: fonts/Literata.ttf, sans: fonts/Lexend.ttf}   # TTF/OTF files
+  panes:                                  # one pane per thread; `pane:` for a single one
+    - {id: orchestrator, source: codex, path: transcript-01.ndjson, title: ORCHESTRATOR}
+    - {id: currency, source: codex, path: transcript-02.ndjson, title: SUBAGENT, subtitle: BUG-02}
+  clock: {utc_offset: 7}
+  beats:                                  # read these real-time windows; time-lapse the rest
+    - {from: "12:34:12", to: "12:34:24"}
+    - {from: "12:44:00", to: "12:44:10"}
+  camera: auto                            # or [{at: 5, zoom: 1.3, pane: currency}, {at: 16, zoom: 1.0}]
+  score: score.wav                        # optional, from truetake-score
+```
+
+Several panes share one timeline: items from every thread are merged in real-time order, so the clock is
+true for all of them. A pane opens when its thread starts, and the panes glide to the next layout: one
+centred, two side by side, then the first on the left with the others stacked. `beats` are the moments the
+film reads; between them it runs as a time-lapse, where lines land whole and the clock races, labelled
+"×N real time · time-lapse". `camera: auto` pushes in on the pane that writes the most during each beat,
+far enough that its text is near full size, and pulls back to the whole set for each time-lapse.
+
+The rules are the scene rules. Text comes from the source as recorded. Messages type at a little above
+reading speed and get a short beat, so a viewer can read them without the film stalling. A source with
+timestamps gets a clock showing the real time on screen. The clock holds while an item that had already
+happened reaches the screen, runs fast through the idle time between items, and says how fast ("×40 real
+time", "paused to read"). An output that would show a private name is replaced by one row that says so;
+private text anywhere else stops the film before a frame is drawn. `.truetake/film/film.json` records the
+source, each change to its text, the pacing, the camera and the time map; `cues.json` lists every visible
+event for the score.
 
 ## Pitfalls
 

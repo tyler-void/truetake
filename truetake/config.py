@@ -171,6 +171,7 @@ class Config:
     price_label: str = "list price"
     callouts: Callouts | None = None  # captions and highlight boxes laid over the assembled video
     slides_text: Path | None = None  # JSON {page: text}, for slide PDFs without a text layer (callout number check)
+    film: dict | None = None  # the `film:` section, validated by truetake.film when a film is made
 
     def scenes(self) -> list[Segment]:
         return [s for s in self.segments if s.kind == "scene"]
@@ -373,6 +374,10 @@ def load(path: str | Path) -> Config:
             raise ConfigError(f"pair {p.id}: left and right must be different scenes")
     if any(s.annotate.get("usage") or s.annotate.get("usage_bar") for s in cfg.scenes()) and not cfg.prices:
         raise ConfigError("annotate.usage needs `usage_prices.per_mtok` (input, output, cache_write_5m, cache_write_1h, cache_read)")
+    if raw.get("film") is not None:
+        if not isinstance(raw["film"], dict):
+            raise ConfigError("film: a mapping (see `truetake film --help`)")
+        cfg.film = raw["film"]
     if raw.get("callouts"):
         cfg.callouts = _callouts(root, raw["callouts"], by_id)
         if cfg.callouts.output == cfg.output:

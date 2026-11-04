@@ -183,6 +183,13 @@ def cmd_callouts(args) -> int:
     return 0
 
 
+def cmd_film(args) -> int:
+    from . import film
+
+    film.make(_cfg(args), preview=args.preview)
+    return 0
+
+
 def cmd_build(args) -> int:
     from .assemble import assemble
     from .check import check
@@ -243,6 +250,9 @@ def main(argv: list[str] | None = None) -> int:
     s = sub.add_parser("callouts", help="lay captions and highlight boxes over the assembled video (to a copy)")
     s.add_argument("--preview", action="store_true", help="only write one frame per callout and a contact sheet")
     s.set_defaults(fn=cmd_callouts)
+    s = sub.add_parser("film", help="draw the film set: a real run on a stage, with motion and a camera")
+    s.add_argument("--preview", action="store_true", help="only write four frames of the film")
+    s.set_defaults(fn=cmd_film)
 
     args = p.parse_args(argv)
     try:
