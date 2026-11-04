@@ -73,7 +73,7 @@ def test_private_text_anywhere_else_stops_the_film(tmp_path, monkeypatch):
 
 
 def test_reading_pace_and_the_clock(tmp_path):
-    words = " ".join(["word"] * 30)
+    words = " ".join(["word"] * 20)  # 99 characters: under the cap, so it types at reading pace
     src = codex(tmp_path, [ev(0, "ITEM.COMPLETED:AGENT_MESSAGE", words),
                            ev(40, "ITEM.STARTED:COMMAND_EXECUTION", input="make")])
     p = sc.Pacing()
@@ -197,15 +197,29 @@ def test_auto_camera_reads_close_and_lapses_wide(tmp_path):
     orch = codex(a, [ev(0, "ITEM.COMPLETED:AGENT_MESSAGE", "Starting the match: checking the checkout and the environment first."),
                      *[ev(5 + i, "ITEM.STARTED:COMMAND_EXECUTION", input=f"poll {i}") for i in range(20)]])
     sub = codex(b, [ev(30 + i * 0.2, "ITEM.STARTED:COMMAND_EXECUTION", input=f"fix {i}") for i in range(10)])
-    s = sc.build_set([("orch", orch), ("sub", sub)], cols=60, home="", beats=[(0.0, 3.0), (29.0, 33.0)])
+    s = sc.build_set([("orch", orch), ("sub", sub)], cols=86, home="", beats=[(0.0, 3.0), (29.0, 33.0)])
     try:
         th = thememod.load("mocha", {}, "monospace")
     except Exception as e:
         pytest.skip(str(e))
-    fs = FilmSpec(output=tmp_path / "f.mp4", width=1280, height=720, fps=12, duration=s.end, cols=60, rows=12,
+    fs = FilmSpec(output=tmp_path / "f.mp4", width=1280, height=720, fps=12, duration=s.end, cols=86, rows=21,
                   panes=[PaneSpec("orch"), PaneSpec("sub")], camera=[], utc_offset=None, camera_auto=True)
     Stage(fs, s, th)
     pushes = [c for c in fs.camera if c.zoom > 1.0]
-    assert [c.pane for c in pushes] == ["orch", "sub"]  # each beat frames the pane that writes in it
+    # The first beat has one full-size pane: no room to push, the shot stays wide. The second frames the pane
+    # that writes in it, which the two-pane layout had shrunk.
+    assert [c.pane for c in pushes] == ["sub"]
     for push in pushes:  # and every push ends in a wide shot
         assert any(c.zoom == 1.0 and c.at > push.at for c in fs.camera)
+
+
+def test_long_items_type_faster_so_no_item_holds_the_film(tmp_path):
+    long_cmd = "python3 - <<'PY'\n" + "print('x')\n" * 60 + "PY"
+    src = codex(tmp_path, [ev(0, "ITEM.STARTED:COMMAND_EXECUTION", input=long_cmd),
+                           ev(1, "ITEM.COMPLETED:AGENT_MESSAGE", "word " * 300)])
+    p = sc.Pacing()
+    s = sc.build(src, cols=80, pacing=p, home="")
+    cmd = [l for l in s.lines if l.role == "command"]
+    msg = [l for l in s.lines if l.role == "message"]
+    assert cmd[-1].t1 - cmd[0].t0 <= p.command_max_seconds + 0.01
+    assert msg[-1].t1 - msg[0].t0 <= p.message_max_seconds + 0.01
