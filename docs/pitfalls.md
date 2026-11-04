@@ -88,10 +88,50 @@ called "JetBrainsMono Nerd Font Mono", not "JetBrains Mono". `render` checks wit
 closest installed families. Code-font ligatures are switched off on cards: `===` drawn as one glyph is not
 what the code says.
 
+`render` checks the family with `fc-list`, but agg uses its own font matching: a fontconfig alias such as
+"JetBrainsMono NF" passes the check and then fails in agg with "no faces matching font family options". Use
+the full family name.
+
 ### No line may wrap
 
 The terminal wraps nothing: agent text is word-wrapped at `terminal.cols − 4`, and `render` fails if any
-line is wider than the terminal (a very long unbroken token can be). Raise `cols` or lower `font_size`.
+line is wider than the terminal. A token longer than the line (a long path in a narrow pane) is split
+across lines; that is layout, not a change to the text.
+
+### Long prompts take long to type
+
+Prompts are typed at 30 characters per second, so a 900-character benchmark prompt takes 30 s of the scene.
+Set the scene's `prompt_seconds` to cap the typing time.
+
+## Imported runs and annotations
+
+### The stream's usage is provisional
+
+In `--output-format stream-json`, each content block of an assistant message is its own event and carries
+the message's usage as it stood when the block was emitted: `output_tokens` counts only what was written so
+far (3 where the transcript says 175). A cost computed from the stream alone comes out low (in one session,
+$0.126 instead of $0.163). The session transcript (`<config>/projects/<cwd>/<session>.jsonl`) has the final
+numbers. Import with `--transcript`, which keeps the final usage per message in `take-NN.sidecar.json`;
+without it, the report says the usage annotations use the stream's provisional numbers.
+
+### A PreToolUse hook's rewrite is not in the stream
+
+A PreToolUse hook that rewrites a command (`updatedInput`, as rtk's hook does) leaves a `hook_response`
+event with an empty stdout, and the `tool_use` in the stream is the original command. The substituted
+command is only in the transcript's `hook_success` attachment, keyed by `toolUseID`. `import --transcript`
+copies it into the sidecar so `annotate.rewrites` can show it.
+
+### One run, several streams
+
+A session continued with `claude -p … --resume <id>` writes one stream per invocation. Import them in order
+and list the follow-up prompts in the scene's `followups`; import refuses when the number of invocations and
+prompts differ. `total_cost_usd` and `modelUsage` in each result are cumulative over the session.
+
+### Labels on a half-width pane
+
+In a `pair`, each scene renders on half the canvas. The label strip uses a smaller font there, and may have
+two lines (`\n` in `label`); keep each line short. The scene's `title` is the short header inside the
+terminal; `label` is the strip under it.
 
 ## Audio
 

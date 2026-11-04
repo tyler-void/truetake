@@ -19,12 +19,14 @@ One `truetake.yaml` drives eight subcommands:
 |---|---|
 | `truetake init` | Write an annotated `truetake.yaml` |
 | `truetake record` | Run N fresh takes per scene with `claude -p` in a sandbox; keep every stream, stderr, git status and diff |
+| `truetake import` | Bring in an existing `claude -p` stream-json run (and its `--resume` follow-ups) as a take, with its source and checksums; `--transcript` adds hook rewrites and final usage |
 | `truetake select` | List a scene's takes, or choose one with a reason the report quotes |
 | `truetake render` | Take → asciicast → [agg](https://github.com/asciinema/agg) → video, with a code card and step captions timed from the cast; title cards and slides |
 | `truetake narrate` | One TTS clip per narration string: [Kokoro](https://huggingface.co/hexgrad/Kokoro-82M) locally (default) or Gemini |
 | `truetake assemble` | Segments in order, one continuous audio track encoded once, loudness normalised, click test at every join, time budget enforced |
 | `truetake check` | Privacy gate over everything shown or spoken, a frame every N seconds plus contact sheets, card-cover and audio checks |
 | `truetake report` | `REPORT.md`: takes, the chosen one and why, every change to the agent's text, cards, captions, narration, checks |
+| `truetake callouts` | For a live talk: a large caption and a highlight box (or a zoomed copy of a terminal line) per beat, laid over the assembled video into a copy of the same length; `--preview` writes one frame per callout first |
 
 `truetake build` runs narrate, render, assemble, check and report in one go.
 
@@ -132,6 +134,33 @@ segments:
 
 `truetake init` writes the full annotated version, with slides, the terminal size and font, MCP configs,
 hooks, isolation, email allowlists and frame spacing.
+
+For comparisons and benchmark demos, a scene can also take `followups` (prompts of a resumed session),
+`display_cwd`, `prompt_seconds`, `pacing` overrides, `annotate: {sizes, rewrites, usage, usage_bar}` (with
+top-level `usage_prices`), and a short `title` for the terminal header; a `pair` segment (`left`, `right`,
+`cols`, `rows`) shows two scenes side by side; title and slide segments take `hold` (seconds on screen when
+there is no narration). See [docs/honesty.md](docs/honesty.md) for what each one changes and how the report
+lists it.
+
+For a talk narrated live, `callouts` lays captions and boxes over the assembled video:
+
+```yaml
+slides: {pdf: slides.pdf, text: slides.text.json}   # text: {page: words}, for PDFs that are pixels only
+callouts:
+  output: demo-cap.mp4                              # never the assembled `output`
+  items:
+    - {from: intro, to: fix, text: The task in one line, boxes: [{segment: intro, text: title}]}
+    - from: fix                                     # seconds, <segment>, <segment>:end, <segment>+<s>, <scene>@<mark>
+      to: fix:end
+      text: It reads the config first
+      boxes: [{scene: fix, line: '^● Read .*config', rows: 1}]   # followed as the terminal scrolls
+      zoom: 1.6                                     # a magnified copy of that line for zoom_seconds (default 8)
+```
+
+A box is a slide rectangle (`segment` + `rect` in output pixels), a title-card line (`segment` + `text`),
+terminal rows matching a regex (`scene` + `line`) or a scene's usage bar (`scene` + `status`). `truetake
+callouts --preview` writes one frame per callout and a contact sheet through the same filter graph as the
+full render; `truetake callouts` writes the copy and checks its length against the source to the frame.
 
 ## Pitfalls
 

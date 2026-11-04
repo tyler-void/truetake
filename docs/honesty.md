@@ -27,6 +27,13 @@ the take, and the report makes them checkable.
   tool calls, whether the hook added context, reply length, files changed, denials, and the first line of
   the final reply.
 
+### Imported takes
+
+`truetake import` brings in a run that already happened (for example a pre-registered benchmark run) instead
+of recording a fresh one. The take is kept like a recorded one: the stream(s) verbatim with each file's
+SHA-256, where it came from (`--source`), the prompts, and, with `--transcript`, the transcript's SHA-256.
+The report labels every imported take and lists those facts. Choosing it still needs a reason.
+
 ## The words on screen are the agent's words
 
 `truetake render` lays out the chosen take's stream as a terminal session. Every word the agent wrote
@@ -45,7 +52,44 @@ the tool call it followed, taken from the stream's `hook_response` event. If a s
 older Claude Code), `hook.text_command` can supply the text, and the report says so.
 
 The prompt shown is the prompt the take was recorded with: if `truetake.yaml` changes it later, `render`
-refuses.
+refuses. Follow-up prompts of a resumed session are shown the same way, where the stream starts the next
+invocation.
+
+Two more presentation changes, each counted in the report when used:
+
+| Change | Why |
+|---|---|
+| The working directory shown as the scene's `display_cwd`, in the header and inside shell commands | A benchmark's run path (`…/work/runs/<id>/repo`) means nothing to a viewer and carries a machine path |
+| A token longer than the line split across lines | Layout in a narrow pane; no character is changed |
+
+### Annotations are measurements, not agent text
+
+`annotate` adds facts from the same stream (and the transcript sidecar), on dim lines marked `⎿` or in a bar
+above the terminal, never in the agent's voice:
+
+- `sizes`: how many characters of each tool result the model received;
+- `rewrites`: the command a PreToolUse hook ran instead of the agent's;
+- `usage` / `usage_bar`: per API request, the context size and the running cost at the prices in
+  `usage_prices` (labelled with its `label`, e.g. "list-price equiv."). With an imported transcript these are the
+  final per-request numbers; the report says when they are the stream's provisional ones.
+
+### Pairs
+
+A `pair` segment shows two scenes side by side. Both start together and each keeps its own pace; the shorter
+one holds its last frame. Put the real duration and the shown duration of each in its `label`.
+
+### Callouts
+
+`truetake callouts` is for a talk narrated live. It never touches the assembled video: captions and boxes go
+into a copy (`callouts.output`, refused if it names `output`), the copy keeps the source's length to the frame
+and its audio as is, and nothing is written if the length differs. Each box comes from what truetake rendered,
+not from a guess: a title card's own layout, a slide rectangle from the config, a terminal line found by
+replaying the scene's cast on its scrolling grid (the box follows the line, and is hidden while the line is off
+screen or under the caption), or the usage bar's own position. A caption may only use numbers that are on
+screen while it shows, as digits or as number words: the terminal rows, usage-bar values, step captions and
+labels of that moment, a title card's text, or a slide's text (its PDF text layer, else `slides.text`). A slide
+with neither cannot back a number, so the caption fails rather than passing unread. Captions go through the
+privacy gate, and `callouts.json` records every window, box position, loupe and the numbers checked.
 
 ## Code cards show real code
 

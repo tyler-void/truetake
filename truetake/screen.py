@@ -106,6 +106,43 @@ def first_hit(events: Iterable[list], rows: int, cols: int, rect: Rect,
     return None
 
 
+def snapshots(events: Iterable[list], rows: int, cols: int) -> list[tuple[float, list[str]]]:
+    """The visible screen after each moment of the cast: (time, one string per row), on the same scrolling grid
+    as `first_hit`. A callout box follows its line through these as the terminal scrolls."""
+    grid = [[" "] * cols for _ in range(rows)]
+    row = col = 0
+    out: list[tuple[float, list[str]]] = []
+    last_t = None
+
+    def newline() -> None:
+        nonlocal row
+        row += 1
+        if row >= rows:
+            row = rows - 1
+            grid.pop(0)  # scroll up one row; the bottom row is blank
+            grid.append([" "] * cols)
+
+    for t, ch, _bg in _chars(events):
+        if last_t is not None and t != last_t:
+            out.append((last_t, ["".join(r).rstrip() for r in grid]))
+        last_t = t
+        if ch == "\r":
+            col = 0
+        elif ch == "\n":
+            newline()
+        elif ch == "\x1b":
+            continue
+        else:
+            if col >= cols:  # auto-wrap at the right margin
+                col = 0
+                newline()
+            grid[row][col] = ch
+            col += 1
+    if last_t is not None:
+        out.append((last_t, ["".join(r).rstrip() for r in grid]))
+    return out
+
+
 def screen_text(events: Iterable[list], rows: int, cols: int) -> list[str]:
     """Every line the cast ever prints, as plain text (colour codes removed). Used by the privacy scan."""
     lines, cur = [], ""

@@ -14,7 +14,7 @@ import yaml
 
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
-KINDS = ("title", "slide", "scene")
+KINDS = ("title", "slide", "scene", "pair")
 ENGINES = ("kokoro", "gemini", "none")
 ISOLATION = ("project", "bare")
 
@@ -65,6 +65,56 @@ class Segment:
     hook: Hook | None = None
     card: Card | None = None
     captions: list[Caption] = field(default_factory=list)
+    followups: list[str] = field(default_factory=list)  # scene: prompts sent with --resume after `prompt`
+    display_cwd: str = ""  # scene: shown in the terminal header instead of the real cwd (a counted transform)
+    annotate: dict = field(default_factory=dict)  # scene: {rewrites, sizes, usage} booleans, see cast.Annotate
+    label: str | None = None  # scene: overrides the video-wide label under this scene's terminal
+    left: str = ""  # pair: scene shown on the left half
+    right: str = ""  # pair: scene shown on the right half
+    cols: int | None = None  # pair: terminal columns of each half (scenes in a pair use the pair's size)
+    rows: int | None = None
+    in_pair: str = ""  # scene: id of the pair that shows it; such a scene is not assembled on its own
+    hold: float = 0.0  # title/slide: minimum seconds on screen (for videos without narration)
+    prompt_seconds: float | None = None  # scene: type each prompt in at most this many seconds
+    pacing: dict = field(default_factory=dict)  # scene: after_tool, after_text, end_hold (s) overrides
+
+    @property
+    def prompts(self) -> list[str]:
+        return [self.prompt, *self.followups]
+
+
+@dataclass
+class Box:
+    """What a callout points at. Exactly one form: a rectangle on a still (`segment` + `rect`), a line of a title
+    card (`segment` + `text`), terminal row(s) matching a regex (`scene` + `line`, followed as the screen
+    scrolls), or a scene's usage bar (`scene` + `status`)."""
+    segment: str = ""
+    rect: tuple[int, int, int, int] | None = None  # x0, y0, x1, y1 in output pixels
+    text: str = ""  # title card: "title" or "subtitle"
+    scene: str = ""
+    line: str = ""  # regex, searched in each visible terminal row
+    rows: int = 1  # rows boxed, from the matching row down
+    status: bool = False
+
+
+@dataclass
+class Callout:
+    text: str
+    start: str  # seconds, `<segment>`, `<segment>:end`, `<segment>+<s>`, or `<scene>@<mark>`
+    end: str
+    boxes: list[Box] = field(default_factory=list)
+    zoom: float = 0.0  # magnify the first terminal-line box in a loupe (0: no loupe)
+    zoom_seconds: float = 8.0  # the loupe shows this long from the line's first appearance; the box stays
+    beat: str = ""  # where the callout comes from (e.g. a script beat), quoted in the report
+    preview_at: float | None = None  # chapter second for `callouts --preview` (default: chosen from the boxes)
+
+
+@dataclass
+class Callouts:
+    output: Path
+    items: list[Callout]
+    max_words: int = 8
+    font_size: int = 60  # px at 1080p
 
 
 @dataclass
@@ -117,6 +167,10 @@ class Config:
     slides_pdf: Path | None
     segments: list[Segment]
     fonts: dict[str, str]
+    prices: dict[str, float] = field(default_factory=dict)  # $/MTok for usage annotations
+    price_label: str = "list price"
+    callouts: Callouts | None = None  # captions and highlight boxes laid over the assembled video
+    slides_text: Path | None = None  # JSON {page: text}, for slide PDFs without a text layer (callout number check)
 
     def scenes(self) -> list[Segment]:
         return [s for s in self.segments if s.kind == "scene"]
@@ -174,6 +228,21 @@ def _scene(root: Path, raw: dict, where: str, seg: Segment) -> None:
     seg.clean_args = clean.split() if isinstance(clean, str) else [str(c) for c in clean]
     if hook := raw.get("hook"):
         seg.hook = Hook(after_read=str(_need(hook, "after_read", f"{where}.hook")), text_command=hook.get("text_command"))
+    seg.title = str(raw.get("title") or "")  # scene: short terminal header (default: the label)
+    seg.followups = [str(x) for x in raw.get("followups") or []]
+    seg.display_cwd = str(raw.get("display_cwd") or "")
+    seg.label = str(raw["label"]) if raw.get("label") is not None else None
+    ann = raw.get("annotate") or {}
+    unknown = set(ann) - {"rewrites", "sizes", "usage", "usage_bar"}
+    if unknown:
+        raise ConfigError(f"{where}.annotate: unknown key(s) {sorted(unknown)}; use rewrites, sizes, usage, usage_bar")
+    seg.prompt_seconds = float(raw["prompt_seconds"]) if raw.get("prompt_seconds") else None
+    pace = raw.get("pacing") or {}
+    allowed = {"after_tool", "after_text", "end_hold", "reply_cps"}
+    if set(pace) - allowed:
+        raise ConfigError(f"{where}.pacing: unknown key(s) {sorted(set(pace) - allowed)}; use {sorted(allowed)}")
+    seg.pacing = {k: float(v) for k, v in pace.items()}
+    seg.annotate = {k: bool(v) for k, v in ann.items()}
     if card := raw.get("card"):
         w = f"{where}.card"
         commit = str(_need(card, "commit", w))
@@ -248,8 +317,11 @@ def load(path: str | Path) -> Config:
             frame_every=float(privacy.get("frame_every", 3)),
         ),
         slides_pdf=_path(root, (raw.get("slides") or {}).get("pdf")),
+        slides_text=_path(root, (raw.get("slides") or {}).get("text")),
         segments=[],
         fonts={k: str(v) for k, v in (raw.get("fonts") or {}).items()},
+        prices={k: float(v) for k, v in ((raw.get("usage_prices") or {}).get("per_mtok") or {}).items()},
+        price_label=str((raw.get("usage_prices") or {}).get("label") or "list price"),
     )
     if cfg.agent.isolation not in ISOLATION:
         raise ConfigError(f"agent.isolation must be one of {ISOLATION}")
@@ -271,14 +343,119 @@ def load(path: str | Path) -> Config:
             seg.title = str(_need(s, "title", where))
             seg.subtitle = str(s.get("subtitle") or "")
             seg.narration = str(s.get("narration") or "")
+            seg.hold = float(s.get("hold", 0))
         elif kind == "slide":
             if not cfg.slides_pdf:
                 raise ConfigError(f"{where}: a slide segment needs `slides.pdf`")
             seg.page = int(_need(s, "page", where))
             seg.narration = str(s.get("narration") or "")
+            seg.hold = float(s.get("hold", 0))
+        elif kind == "pair":
+            seg.left, seg.right = str(_need(s, "left", where)), str(_need(s, "right", where))
+            seg.narration = str(s.get("narration") or "")
+            seg.cols = int(s.get("cols", 92))
+            seg.rows = int(s.get("rows", 40))
         else:
             _scene(root, s, where, seg)
         cfg.segments.append(seg)
     if not cfg.segments:
         raise ConfigError("`segments` is empty")
+    by_id = {s.id: s for s in cfg.segments}
+    for p in (s for s in cfg.segments if s.kind == "pair"):
+        for side in (p.left, p.right):
+            sc = by_id.get(side)
+            if sc is None or sc.kind != "scene":
+                raise ConfigError(f"pair {p.id}: {side!r} is not a scene in this file")
+            if sc.in_pair:
+                raise ConfigError(f"pair {p.id}: scene {side!r} is already shown by pair {sc.in_pair!r}")
+            sc.in_pair = p.id
+        if p.left == p.right:
+            raise ConfigError(f"pair {p.id}: left and right must be different scenes")
+    if any(s.annotate.get("usage") or s.annotate.get("usage_bar") for s in cfg.scenes()) and not cfg.prices:
+        raise ConfigError("annotate.usage needs `usage_prices.per_mtok` (input, output, cache_write_5m, cache_write_1h, cache_read)")
+    if raw.get("callouts"):
+        cfg.callouts = _callouts(root, raw["callouts"], by_id)
+        if cfg.callouts.output == cfg.output:
+            raise ConfigError("callouts.output must differ from `output`: callouts never overwrite the assembled video")
     return cfg
+
+
+TIME_RE = re.compile(r"^(?:(?P<sec>\d+(?:\.\d+)?)|(?P<seg>[a-z0-9][a-z0-9_-]*)(?::(?P<end>end)|(?P<off>[+-]\d+(?:\.\d+)?))?"
+                     r"|(?P<scene>[a-z0-9][a-z0-9_-]*)@(?P<mark>\S+))$")
+
+
+def _time(value: Any, where: str, by_id: dict[str, Segment]) -> str:
+    s = str(value).strip()
+    m = TIME_RE.match(s)
+    if not m:
+        raise ConfigError(f"{where}: {s!r} is not a time; use seconds, <segment>, <segment>:end, <segment>+<s> or <scene>@<mark>")
+    ref = m["seg"] or m["scene"]
+    if ref and ref not in by_id:
+        raise ConfigError(f"{where}: no segment {ref!r}")
+    if m["scene"] and by_id[ref].kind != "scene":
+        raise ConfigError(f"{where}: {ref!r} is not a scene; marks (@prompt:2, @tool:Bash, @reply) belong to scenes")
+    return s
+
+
+def _box(raw: Any, where: str, by_id: dict[str, Segment]) -> Box:
+    if not isinstance(raw, dict):
+        raise ConfigError(f"{where}: a box is a mapping")
+    unknown = set(raw) - {"segment", "rect", "text", "scene", "line", "rows", "status"}
+    if unknown:
+        raise ConfigError(f"{where}: unknown key(s) {sorted(unknown)}")
+    b = Box(segment=str(raw.get("segment") or ""), text=str(raw.get("text") or ""), scene=str(raw.get("scene") or ""),
+            line=str(raw.get("line") or ""), rows=int(raw.get("rows", 1)), status=bool(raw.get("status", False)))
+    if raw.get("rect") is not None:
+        r = raw["rect"]
+        if not (isinstance(r, list) and len(r) == 4 and all(isinstance(x, (int, float)) for x in r) and r[2] > r[0] and r[3] > r[1]):
+            raise ConfigError(f"{where}: `rect` is [x0, y0, x1, y1] in output pixels")
+        b.rect = tuple(int(round(x)) for x in r)
+    forms = [bool(b.segment and b.rect), bool(b.segment and b.text), bool(b.scene and b.line), bool(b.scene and b.status)]
+    if sum(forms) != 1 or (b.segment and b.scene):
+        raise ConfigError(f"{where}: give exactly one of segment+rect, segment+text, scene+line, scene+status")
+    seg = by_id.get(b.segment or b.scene)
+    if seg is None:
+        raise ConfigError(f"{where}: no segment {b.segment or b.scene!r}")
+    if b.rect and seg.kind not in ("title", "slide"):
+        raise ConfigError(f"{where}: `rect` boxes are for title and slide segments; {seg.id!r} is a {seg.kind}")
+    if b.text and (seg.kind != "title" or b.text not in ("title", "subtitle")):
+        raise ConfigError(f"{where}: `text` is `title` or `subtitle` of a title segment")
+    if b.scene and seg.kind != "scene":
+        raise ConfigError(f"{where}: {seg.id!r} is not a scene")
+    if b.line:
+        try:
+            re.compile(b.line)
+        except re.error as e:
+            raise ConfigError(f"{where}: `line` is not a valid regex: {e}")
+        if b.rows < 1:
+            raise ConfigError(f"{where}: `rows` must be at least 1")
+    if b.status and not seg.annotate.get("usage_bar"):
+        raise ConfigError(f"{where}: scene {seg.id!r} has no usage bar (annotate.usage_bar)")
+    return b
+
+
+def _callouts(root: Path, raw: Any, by_id: dict[str, Segment]) -> Callouts:
+    if not isinstance(raw, dict):
+        raise ConfigError("callouts: a mapping with `output` and `items`")
+    co = Callouts(output=_path(root, _need(raw, "output", "callouts")), items=[],
+                  max_words=int(raw.get("max_words", 8)), font_size=int(raw.get("font_size", 60)))
+    for i, it in enumerate(raw.get("items") or []):
+        w = f"callouts.items[{i}]"
+        text = str(_need(it, "text", w)).strip()
+        if len(text.split()) > co.max_words:
+            raise ConfigError(f"{w}: {text!r} has {len(text.split())} words; the limit is {co.max_words}")
+        c = Callout(text=text, start=_time(_need(it, "from", w), f"{w}.from", by_id),
+                    end=_time(_need(it, "to", w), f"{w}.to", by_id), beat=str(it.get("beat") or ""),
+                    zoom=float(it.get("zoom") or 0), zoom_seconds=float(it.get("zoom_seconds", 8)),
+                    preview_at=float(it["preview_at"]) if it.get("preview_at") is not None else None)
+        c.boxes = [_box(b, f"{w}.boxes[{j}]", by_id) for j, b in enumerate(it.get("boxes") or [])]
+        if c.zoom and not (1.2 <= c.zoom <= 3):
+            raise ConfigError(f"{w}: `zoom` is between 1.2 and 3 (or 0 for none)")
+        if c.zoom and not any(b.line for b in c.boxes):
+            raise ConfigError(f"{w}: `zoom` magnifies a terminal-line box; add one (scene + line)")
+        co.items.append(c)
+    if not co.items:
+        raise ConfigError("callouts: `items` is empty")
+    if co.output.suffix != ".mp4":
+        raise ConfigError("callouts.output must be an .mp4 file")
+    return co

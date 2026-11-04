@@ -34,13 +34,15 @@ class AssembleError(RuntimeError):
 def plan(cfg: Config) -> list[dict]:
     out, t0 = [], 0.0
     for seg in cfg.segments:
+        if seg.kind == "scene" and seg.in_pair:
+            continue  # its pair shows it
         parts = []
         for role, path, text in clips(cfg, seg) if cfg.voice.engine != "none" else []:
             if not path.exists() or path.with_suffix(".txt").read_text(encoding="utf-8") != text:
                 raise AssembleError(f"{seg.id}: narration clip for {role} is missing or stale; run `truetake narrate`")
             parts.append({"role": role, "path": str(path), "seconds": duration(path)})
         speech = sum(p["seconds"] for p in parts) + GAP * max(0, len(parts) - 1)
-        if seg.kind == "scene":
+        if seg.kind in ("scene", "pair"):
             video = state.render_dir(cfg) / seg.id / "scene.mp4"
             if not video.exists():
                 raise AssembleError(f"{seg.id}: not rendered; run `truetake render`")
@@ -56,7 +58,7 @@ def plan(cfg: Config) -> list[dict]:
             video = state.render_dir(cfg) / seg.id / "still.png"
             if not video.exists():
                 raise AssembleError(f"{seg.id}: not rendered; run `truetake render`")
-            visual = 0.0
+            visual = seg.hold  # a still has no length of its own; without narration it lasts `hold`
         d = frames(max(LEAD + speech, visual) + TAIL, cfg.fps)
         out.append({"id": seg.id, "kind": seg.kind, "start": round(t0, 3), "seconds": d, "visual": round(visual, 3),
                     "speech": round(speech, 3), "clips": parts, "source": str(video)})
@@ -70,7 +72,7 @@ def _segment_videos(cfg: Config, segs: list[dict], work: Path) -> Path:
     for s in segs:
         out = work / f"seg-{s['id']}.mp4"
         common = ["-an", "-c:v", "libx264", "-crf", "18", "-preset", "medium", "-r", str(cfg.fps), "-pix_fmt", "yuv420p"]
-        if s["kind"] == "scene":
+        if s["kind"] in ("scene", "pair"):
             ffmpeg("-i", s["source"], "-vf", f"tpad=stop_mode=clone:stop_duration={s['seconds']},fps={cfg.fps},format=yuv420p",
                    "-t", f"{s['seconds']}", *common, str(out))
         else:
