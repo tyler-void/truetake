@@ -23,6 +23,7 @@ dependencies = [
   "numpy>=1.24",
   "Pygments>=2.17",
   "catppuccin[pygments]>=2.3",
+  "pyte>=0.8",
 ]
 
 [project.optional-dependencies]

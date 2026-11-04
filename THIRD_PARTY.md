@@ -24,6 +24,7 @@ package metadata, not recalled.
 | [NumPy](https://pypi.org/project/numpy/) | frame and calibration analysis | BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0 | package metadata |
 | [Pygments](https://pypi.org/project/Pygments/) | syntax highlighting on code cards | BSD-2-Clause | package metadata |
 | [catppuccin](https://pypi.org/project/catppuccin/) (with the `pygments` extra) | the `catppuccin-mocha` Pygments style | MIT | `LICENSE` in the package (catppuccin/python) |
+| [pyte](https://pypi.org/project/pyte/) | the virtual terminal casts are replayed on (card timing, callouts, privacy scan) | LGPL-3.0 | `LICENSE` in the package and its classifier; used unmodified as a library |
 | [kokoro](https://pypi.org/project/kokoro/), optional | local TTS | Apache-2.0 | package metadata; `LICENSE` in hexgrad/kokoro |
 | [soundfile](https://pypi.org/project/soundfile/), optional | audio I/O for Kokoro | BSD-3-Clause | package metadata |
 
