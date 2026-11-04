@@ -53,6 +53,8 @@ class Pacing:
     message_cps: float = 24.0  # a little above reading speed: the reader follows the cursor
     command_cps: float = 40.0
     call_cps: float = 40.0
+    message_max_seconds: float = 6.0  # a long message types faster, so no single item holds the film too long
+    command_max_seconds: float = 1.5  # a long command (a heredoc, a script) likewise
     read_wps: float = 3.3  # words per second a viewer reads
     beat_min: float = 0.5  # pause after a message, at least
     beat_max: float = 1.5  # and at most
@@ -103,6 +105,7 @@ class Script:
     origin: str
     pane_transforms: dict[str, dict[str, int]] = field(default_factory=dict)
     lapses: list[tuple[float, float]] = field(default_factory=list)  # film-time spans run as a time-lapse
+    reads: list[tuple[float, float]] = field(default_factory=list)  # film-time spans of the beats, read in full
 
     @property
     def lines(self) -> list[Line]:
@@ -123,6 +126,18 @@ class Script:
             if t <= f1:
                 return r0 if f1 == f0 else r0 + (r1 - r0) * (t - f0) / (f1 - f0)
         return pts[-1][1]
+
+    def film_at(self, real: float) -> float | None:
+        """The first film time at which the clock reaches `real` (seconds since the first event)."""
+        if not self.timemap:
+            return None
+        pts = self.timemap
+        if real <= pts[0][1]:
+            return pts[0][0]
+        for (f0, r0), (f1, r1) in zip(pts, pts[1:]):
+            if r0 < real <= r1:
+                return f1 if r1 == r0 else f0 + (f1 - f0) * (real - r0) / (r1 - r0)
+        return pts[-1][0]
 
     def rate_at(self, t: float, h: float = 0.25) -> float | None:
         """Real seconds per film second around `t` (1 is real time; 0 is held still to read)."""
@@ -204,13 +219,15 @@ def build(src: Source, cols: int, pacing: Pacing | None = None, scanner: Scanner
 
 def build_set(sources: list[tuple[str, Source]], cols: int, pacing: Pacing | None = None,
               scanner: Scanner | None = None, home: str | None = None, until: float | None = None,
-              beats: list[tuple[float, float]] | None = None) -> Script:
+              beats: list[tuple[float, float]] | None = None,
+              holds: list[tuple[float, float]] | None = None) -> Script:
     """Pace several sources into panes on one timeline.
 
     Items from every source are merged in real-time order, so one clock is true for every pane. `beats` are
     real-time windows (seconds since the earliest source starts) played at reading pace; outside them the film
     runs as a time-lapse: lines land whole, a few hundredths of a second apart, and the clock races. Without
-    beats, everything is read. With `until` (the film's length), pacing stops at the first item that would
+    beats, everything is read. `holds` pause the film just after a real moment, for that many seconds (a
+    subtitle's reading time). With `until` (the film's length), pacing stops at the first item that would
     start after it, so the transforms counted are those of what the film shows.
     """
     p = pacing or Pacing()
@@ -234,6 +251,8 @@ def build_set(sources: list[tuple[str, Source]], cols: int, pacing: Pacing | Non
 
     timemap: list[tuple[float, float]] = []
     lapses: list[tuple[float, float]] = []
+    reads: list[tuple[float, float]] = []
+    pending = sorted(holds or [])  # (real, seconds): pause after the moment, e.g. for a subtitle to be read
     ft, last_real = p.lead_in, None
     mode = None  # "read" or "lapse"
 
@@ -277,18 +296,22 @@ def build_set(sources: list[tuple[str, Source]], cols: int, pacing: Pacing | Non
             timemap.append((ft, real))
         if now == "lapse" and mode != "lapse":
             lapses.append((ft, ft))
+        if now == "read" and mode != "read":
+            reads.append((ft, ft))
         mode = now
         start = ft
 
         if it.kind in ("message", "hook"):
             text = clean(it.text)
             typed = 0.0
-            for i, part in enumerate(wrap(text, width - 2)):
+            parts = wrap(text, width - 2)
+            cps = max(p.message_cps, (sum(map(len, parts)) + 2 * len(parts)) / p.message_max_seconds)  # all typed
+            for i, part in enumerate(parts):
                 lead = ("• " if it.kind == "message" else "↳ ") if i == 0 else "  "
                 role = "message" if it.kind == "message" else "dim"
                 if reading:
-                    add(lead + part, role, p.message_cps)
-                    typed += len(part) / p.message_cps
+                    add(lead + part, role, cps)
+                    typed += len(lead + part) / cps
                 else:
                     add(lead + part, role)
             if reading:
@@ -300,8 +323,10 @@ def build_set(sources: list[tuple[str, Source]], cols: int, pacing: Pacing | Non
             if m:
                 text, tr["shell_wrap"] = m.group(1), tr["shell_wrap"] + 1
             lead = {"command": "$ ", "tool": "● ", "prompt": "> "}[it.kind]
-            for part in wrap(lead + clean(text), width):
-                add(part, "prompt" if it.kind == "prompt" else "command", p.command_cps if reading else 0.0)
+            parts = wrap(lead + clean(text), width)
+            cps = max(p.command_cps, sum(map(len, parts)) / p.command_max_seconds)
+            for part in parts:
+                add(part, "prompt" if it.kind == "prompt" else "command", cps if reading else 0.0)
             if reading:
                 ft += p.after_command
             if it.kind != "command":
@@ -337,6 +362,14 @@ def build_set(sources: list[tuple[str, Source]], cols: int, pacing: Pacing | Non
         if not reading:
             ft = max(ft, start + p.lapse_step)
             lapses[-1] = (lapses[-1][0], ft)
+        else:
+            reads[-1] = (reads[-1][0], ft)
+        while pending and real is not None and pending[0][0] <= real:
+            # A hold: the film pauses on this moment (the clock stops, "paused to read"), then goes on.
+            ft += pending.pop(0)[1]
+            timemap.append((ft, last_real))
+            if mode == "lapse":
+                lapses.append((ft, ft))
 
     if scanner:  # the gate: anything else private on screen stops the film before a frame exists
         hits = [h for pid, ls in panes.items() for i, l in enumerate(ls) for h in scanner.scan(f"{pid} line {i + 1}", l.text)]
@@ -345,4 +378,4 @@ def build_set(sources: list[tuple[str, Source]], cols: int, pacing: Pacing | Non
             raise FilmError(f"privacy gate: {len(hits)} hit(s) in the film's text; nothing was rendered\n{shown}")
     total = {k: sum(t[k] for t in pane_tr.values()) for k in next(iter(pane_tr.values()))}
     origin = "; ".join(s.origin for _, s in sources)
-    return Script(panes, timemap, total, t_zero, origin, pane_tr, lapses)
+    return Script(panes, timemap, total, t_zero, origin, pane_tr, lapses, reads)

@@ -60,6 +60,7 @@ class FilmSpec:
     loudness: float = -21.0
     beats: list[tuple[float, float]] = field(default_factory=list)  # real seconds, for the record
     camera_auto: bool = False  # derive the camera from the script: close on the working pane while reading
+    subtitles: list[tuple[float, float | None, str]] = field(default_factory=list)  # real from, real to, text
 
 
 class PaneView:
@@ -108,6 +109,8 @@ class Stage:
         self.label = skia.Font(skia.Typeface.MakeFromFile(theme.sans), 17 * k)
         self.small = skia.Font(skia.Typeface.MakeFromFile(theme.sans), 15 * k)
         self.clock = skia.Font(skia.Typeface.MakeFromFile(theme.serif), 44 * k)
+        self.sub_font = skia.Font(skia.Typeface.MakeFromFile(theme.sans), 30 * k)
+        self.sub_font.setSubpixel(True)
         for f, role in ((self.mono, "mono"), (self.label, "sans"), (self.clock, "serif")):
             if f.getTypeface() is None:
                 raise FilmError(f"film font `{role}` could not be loaded by Skia")
@@ -116,11 +119,13 @@ class Stage:
         self.pw = round(spec.cols * self.cw) + 2 * self.pad_x
         self.ph = spec.rows * self.lh + 2 * self.pad_y
         self.band = round(60 * k)  # the label band above a pane
-        self.area = (80 * k, 150 * k, spec.width - 80 * k, spec.height - 50 * k)  # where panes may go
+        bottom = 150 * k if spec.subtitles else 50 * k  # leave a band for subtitles
+        self.area = (80 * k, 150 * k, spec.width - 80 * k, spec.height - bottom)  # where panes may go
         if self.pw > spec.width * 0.94 or self.ph > spec.height * 0.8:
             raise FilmError(f"a {spec.cols}x{spec.rows} pane does not fit a {spec.width}x{spec.height} film; "
                             "use fewer columns or rows")
 
+        self.subs = self.place_subtitles()
         names = {p.id: p for p in spec.panes}
         self.views: list[PaneView] = []
         for i, (pid, lines) in enumerate(script.panes.items()):
@@ -136,6 +141,55 @@ class Stage:
             self.zoom.to(c.at, c.zoom)
             self.focus.to(c.at, 1.0 if c.zoom != 1.0 else 0.0)
         self.pushes = [(a.at, b.at) for a, b in zip(spec.camera, spec.camera[1:]) if a.zoom != 1.0]
+
+    # ---------- subtitles ----------
+
+    def wrap_sub(self, text: str) -> list[str]:
+        width, words, lines, cur = self.spec.width * 0.7, text.split(), [], ""
+        for w in words:
+            nxt = f"{cur} {w}".strip()
+            if cur and self.sub_font.measureText(nxt) > width:
+                lines.append(cur)
+                cur = w
+            else:
+                cur = nxt
+        return lines + [cur] if cur else lines
+
+    def place_subtitles(self) -> list[dict]:
+        """Real-time anchors become film times. Each subtitle is held at least as long as it takes to read
+        (0.6 s plus 0.3 s a word), never past the next one; one that cannot get that long is reported."""
+        sc, subs = self.script, self.spec.subtitles
+        if subs and not sc.timemap:
+            raise FilmError("film.subtitles need timestamped sources (a clock to anchor them to)")
+        out = []
+        for i, (a, z, text) in enumerate(subs):
+            t0 = sc.film_at(a)
+            nxt = sc.film_at(subs[i + 1][0]) if i + 1 < len(subs) else sc.end + 2.0
+            need = 0.6 + 0.3 * len(text.split())
+            t1 = sc.film_at(z) if z is not None else t0 + need
+            t1 = min(max(t1, t0 + need), nxt - 0.15)
+            lines = self.wrap_sub(text)
+            if len(lines) > 2:
+                raise FilmError(f"film.subtitles[{i}]: {len(lines)} lines at this size; keep a subtitle to two lines")
+            out.append({"text": text, "lines": lines, "t0": round(t0, 3), "t1": round(t1, 3),
+                        "real_from": a, "real_to": z, "short": t1 - t0 < need - 1e-6})
+        return out
+
+    def draw_subtitle(self, canvas, t: float) -> None:
+        sk, th, k = self.skia, self.theme, self.k
+        for sub in self.subs:
+            if not sub["t0"] <= t < sub["t1"]:
+                continue
+            a = min(1.0, (t - sub["t0"]) / 0.25, (sub["t1"] - t) / 0.25)
+            lh = 42 * k
+            w = max(self.sub_font.measureText(l) for l in sub["lines"]) + 56 * k
+            h = lh * len(sub["lines"]) + 30 * k
+            x, y = (self.spec.width - w) / 2, self.spec.height - 40 * k - h
+            canvas.drawRRect(sk.RRect.MakeRectXY(sk.Rect.MakeXYWH(x, y, w, h), 14 * k, 14 * k), self.paint(th.stage, 0.94 * a))
+            for j, line in enumerate(sub["lines"]):
+                lw = self.sub_font.measureText(line)
+                canvas.drawString(line, (self.spec.width - lw) / 2, y + 15 * k + lh * j + lh * 0.72, self.sub_font,
+                                  self.paint(th.ink, a))
 
     # ---------- layout ----------
 
@@ -176,23 +230,24 @@ class Stage:
         """While the film reads, push in on the pane that writes the most in that stretch, far enough that its
         text is near full size; during a time-lapse, pull back to the whole set. Nothing is framed that the
         script does not put there."""
-        end = self.script.end
-        spans, t = [], self.script.lines[0].t0 if self.script.lines else 0.0
-        for a, b in sorted(self.script.lapses):
-            if a - t > 2.0:
-                spans.append((t, a))
-            t = max(t, b)
-        if end - t > 2.0:
-            spans.append((t, end))
+        spans = []  # the beats, merged when they nearly touch; pauses for subtitles are not beats
+        for a, b in sorted(self.script.reads):
+            if spans and a - spans[-1][1] < 1.5:
+                spans[-1] = (spans[-1][0], max(spans[-1][1], b))
+            else:
+                spans.append((a, b))
+        spans = [(a, b) for a, b in spans if b - a > 2.0]
         cams: list[Camera] = []
         for a, b in spans:
             counts = {v.spec.id: sum(1 for l in v.lines if a <= l.t0 <= b and l.text) for v in self.views}
             pid = max(counts, key=counts.get)
             v = next(x for x in self.views if x.spec.id == pid)
             scale = v.s.at(a + 1.0)
-            zoom = min(1.8, max(1.0, 0.92 / scale))
-            if zoom < 1.05:
-                zoom = 1.15  # a single full-size pane still gets a gentle push
+            x0, y0, x1, y1 = self.area  # the pushed-in pane must still fit between the clock and the subtitles
+            fit = min((x1 - x0) / (self.pw * scale), (y1 - y0) / ((self.ph + self.band) * scale))
+            zoom = min(1.8, 0.92 / scale, fit)
+            if zoom < 1.04:
+                continue  # no room to push in: the shot stays wide
             cams.append(Camera(at=round(a + 0.3, 3), zoom=round(zoom, 3), pane=pid))
             cams.append(Camera(at=round(b, 3), zoom=1.0))
         return cams
@@ -255,6 +310,7 @@ class Stage:
             self.draw_pane(canvas, v, t, a, v is live)
         canvas.restore()
         self.draw_clock(canvas, t)
+        self.draw_subtitle(canvas, t)
 
     def draw_pane(self, canvas, v: PaneView, t: float, alpha: float, live: bool) -> None:
         sk, th, k = self.skia, self.theme, self.k
@@ -415,7 +471,8 @@ def record(spec: FilmSpec, script: Script, stage: Stage, pacing) -> dict:
             "clock": bool(script.timemap and spec.utc_offset is not None),
             "real_seconds_shown": round(script.real_at(spec.duration), 3) if script.timemap else None,
             "timemap": [[round(f, 3), round(r, 3)] for f, r in script.timemap if f <= spec.duration + 1],
-            "camera": [asdict(c) for c in spec.camera], "camera_spring": stage.zoom.keyframes()}
+            "camera": [asdict(c) for c in spec.camera], "camera_spring": stage.zoom.keyframes(),
+            "subtitles": [{k: v for k, v in s.items() if k != "lines"} for s in stage.subs]}
 
 
 def render(spec: FilmSpec, script: Script, theme: Theme, pacing, work: Path, preview: list[float] | None = None,
@@ -424,6 +481,10 @@ def render(spec: FilmSpec, script: Script, theme: Theme, pacing, work: Path, pre
     import skia
 
     stage = Stage(spec, script, theme)
+    for sub in stage.subs:
+        if sub["short"]:
+            log(f"  note: subtitle {sub['text'][:40]!r} gets {sub['t1'] - sub['t0']:.1f}s before the next one, "
+                "less than its reading time; move it or widen the beat around it")
     out_dir = work / "film"
     out_dir.mkdir(parents=True, exist_ok=True)
     surface = skia.Surface(spec.width, spec.height)

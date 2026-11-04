@@ -184,6 +184,8 @@ film:
     - {from: "12:34:12", to: "12:34:24"}
     - {from: "12:44:00", to: "12:44:10"}
   camera: auto                            # or [{at: 5, zoom: 1.3, pane: currency}, {at: 16, zoom: 1.0}]
+  subtitles:                              # what a viewer needs to follow the run, at the moment it happened
+    - {at: "12:44:31", text: "12:44: Game Master accepts BUG-02."}
   score: score.wav                        # optional, from truetake-score
 ```
 
@@ -193,6 +195,12 @@ centred, two side by side, then the first on the left with the others stacked. `
 film reads; between them it runs as a time-lapse, where lines land whole and the clock races, labelled
 "×N real time · time-lapse". `camera: auto` pushes in on the pane that writes the most during each beat,
 far enough that its text is near full size, and pulls back to the whole set for each time-lapse.
+
+Raw logs alone are hard to follow, so a film can carry `subtitles`. Each is anchored to the real moment it
+describes and appears when the clock reaches it; the film then pauses on that moment long enough to read it
+(the clock stops and says "paused to read"), so a subtitle inside a time-lapse is never rushed. Subtitles go
+through the privacy gate and are listed in `film.json` with their real and film times. Write them from what
+the logs show; long messages and commands type faster than reading pace, so the subtitles carry the story.
 
 The rules are the scene rules. Text comes from the source as recorded. Messages type at a little above
 reading speed and get a short beat, so a viewer can read them without the film stalling. A source with

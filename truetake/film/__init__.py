@@ -35,7 +35,7 @@ from .render import Camera, FilmSpec, PaneSpec, render
 from .script import FilmError, Pacing
 
 KEYS = {"output", "duration", "fps", "theme", "fonts", "pane", "panes", "cols", "rows", "clock", "camera", "beats",
-        "pacing", "score", "loudness"}
+        "subtitles", "pacing", "score", "loudness"}
 PANE_KEYS = {"id", "source", "path", "scene", "title", "subtitle", "cols", "rows"}
 CLOCK_RE = re.compile(r"^(\d{1,2}):(\d{2})(?::(\d{2}))?$")
 
@@ -127,20 +127,24 @@ def source(cfg: Config, pane: dict) -> scriptmod.Source:
     raise ConfigError(f"film pane {pane['id']}: source is `codex` (with `path`) or `scene` (with `scene`)")
 
 
+def wall(v, t_zero: dt.datetime | None, utc_offset: float | None, where: str) -> float:
+    """A real time: seconds since the first event, or a wall-clock time `HH:MM[:SS]` (needs `clock.utc_offset`)."""
+    if isinstance(v, (int, float)):
+        return float(v)
+    m = CLOCK_RE.match(str(v))
+    if not m:
+        raise ConfigError(f"{where}: seconds, or a wall-clock time HH:MM[:SS]")
+    if t_zero is None or utc_offset is None:
+        raise ConfigError(f"{where}: a wall-clock time needs timestamped sources and `clock.utc_offset`")
+    local = t_zero + dt.timedelta(hours=utc_offset)
+    at = local.replace(hour=int(m[1]), minute=int(m[2]), second=int(m[3] or 0), microsecond=0)
+    return (at - local).total_seconds()
+
+
 def beats(raw, t_zero: dt.datetime | None, utc_offset: float | None) -> list[tuple[float, float]]:
-    """`film.beats`: real-time windows played at reading pace. Each end is seconds since the first event, or
-    a wall-clock time `HH:MM[:SS]` (needs `clock.utc_offset`)."""
+    """`film.beats`: real-time windows played at reading pace."""
     def when(v, where: str) -> float:
-        if isinstance(v, (int, float)):
-            return float(v)
-        m = CLOCK_RE.match(str(v))
-        if not m:
-            raise ConfigError(f"{where}: seconds, or a wall-clock time HH:MM[:SS]")
-        if t_zero is None or utc_offset is None:
-            raise ConfigError(f"{where}: a wall-clock time needs timestamped sources and `clock.utc_offset`")
-        local = t_zero + dt.timedelta(hours=utc_offset)
-        at = local.replace(hour=int(m[1]), minute=int(m[2]), second=int(m[3] or 0), microsecond=0)
-        return (at - local).total_seconds()
+        return wall(v, t_zero, utc_offset, where)
 
     out = []
     for i, b in enumerate(raw or []):
@@ -153,6 +157,28 @@ def beats(raw, t_zero: dt.datetime | None, utc_offset: float | None) -> list[tup
     return out
 
 
+def subtitles(raw, t_zero: dt.datetime | None, utc_offset: float | None) -> list[tuple[float, float | None, str]]:
+    """`film.subtitles`: what a viewer needs to follow the run, each anchored to the real moment it describes:
+    {at: "12:44:31", text: "…"} or {from: …, to: …, text: "…"}. A subtitle stays up until `to`, or until the
+    next one starts, and always long enough to read."""
+    out = []
+    for i, sub in enumerate(raw or []):
+        w = f"film.subtitles[{i}]"
+        if not isinstance(sub, dict) or not str(sub.get("text") or "").strip():
+            raise ConfigError(f"{w}: {{at: time, text: …}} or {{from: time, to: time, text: …}}")
+        start = sub.get("at", sub.get("from"))
+        if start is None:
+            raise ConfigError(f"{w}: `at` (or `from`) is required")
+        a = wall(start, t_zero, utc_offset, w)
+        z = wall(sub["to"], t_zero, utc_offset, f"{w}.to") if sub.get("to") is not None else None
+        if z is not None and z <= a:
+            raise ConfigError(f"{w}: `to` must come after the start")
+        out.append((a, z, " ".join(str(sub["text"]).split())))
+    if [a for a, _, _ in out] != sorted(a for a, _, _ in out):
+        raise ConfigError("film.subtitles: in time order")
+    return out
+
+
 def make(cfg: Config, preview: bool = False, log=print) -> dict:
     fs, panes, pacing = spec(cfg)
     fonts_cfg = {k: str(_path(cfg, v)) for k, v in (cfg.film.get("fonts") or {}).items()}
@@ -161,8 +187,14 @@ def make(cfg: Config, preview: bool = False, log=print) -> dict:
     sources = [(p["id"], source(cfg, p)) for p in panes]
     t_zero = min((s.started for _, s in sources if s.started), default=None)
     fs.beats = beats(cfg.film.get("beats"), t_zero, fs.utc_offset)
+    fs.subtitles = subtitles(cfg.film.get("subtitles"), t_zero, fs.utc_offset)
+    hits = [h for i, (_, _, text) in enumerate(fs.subtitles) for h in scanner.scan(f"subtitle {i + 1}", text)]
+    if hits:
+        raise FilmError("privacy gate: " + "; ".join(f"{h.source} {h.kind}: {h.snippet}" for h in hits[:5]))
     auto = fs.duration == 0.0
-    sc = scriptmod.build_set(sources, fs.cols, pacing, scanner, until=None if auto else fs.duration, beats=fs.beats)
+    holds = [(a, 0.6 + 0.3 * len(text.split())) for a, _, text in fs.subtitles]  # time to read each subtitle
+    sc = scriptmod.build_set(sources, fs.cols, pacing, scanner, until=None if auto else fs.duration, beats=fs.beats,
+                             holds=holds)
     if auto:
         fs.duration = round(sc.end + 2.0, 2)
     times = [round(fs.duration * q, 2) for q in (0.1, 0.35, 0.6, 0.9)] if preview else None
