@@ -180,14 +180,43 @@ def render_caption(text: str, out: Path, scale: float, fonts_cfg: dict, mono_fam
     return img.size
 
 
-def render_title(title: str, subtitle: str, out: Path, width: int, height: int, fonts_cfg: dict, mono_family: str) -> None:
+def render_callout(text: str, out: Path, scale: float, size: int, fonts_cfg: dict, mono_family: str) -> tuple[int, int]:
+    """A callout caption: large bold text on an opaque pill with a peach rule, readable from the back of a room."""
+    font = fonts.load(fonts.resolve(fonts_cfg, "sans_bold", mono_family, text), round(size * scale), "Bold")
+    padx, h = round(size * 0.6 * scale), round(size * 1.55 * scale)
+    w = int(font.getlength(text)) + 2 * padx
+    img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    d.rounded_rectangle([0, 0, w - 1, h - 1], round(h * 0.22), fill=CRUST, outline=PEACH, width=max(2, round(3 * scale)))
+    d.text((w / 2, h / 2), text, font=font, fill=TEXT, anchor="mm")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    img.save(out)
+    return img.size
+
+
+def _title_layout(title: str, subtitle: str, width: int, height: int, fonts_cfg: dict, mono_family: str):
     scale = height / 1080
     big = fonts.load(fonts.resolve(fonts_cfg, "sans_bold", mono_family, title), round(96 * scale), "Bold")
     small = fonts.load(fonts.resolve(fonts_cfg, "sans", mono_family, subtitle), round(40 * scale))
+    return ((width / 2, height / 2 - round(40 * scale)), big), ((width / 2, height / 2 + round(60 * scale)), small)
+
+
+def title_boxes(title: str, subtitle: str, width: int, height: int, fonts_cfg: dict, mono_family: str) -> dict:
+    """Where `render_title` puts each line: {"title": (x0, y0, x1, y1), "subtitle": ...}, for callout boxes."""
+    (tp, big), (sp, small) = _title_layout(title, subtitle, width, height, fonts_cfg, mono_family)
+    d = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+    out = {"title": d.textbbox(tp, title, font=big, anchor="mm")}
+    if subtitle:
+        out["subtitle"] = d.textbbox(sp, subtitle, font=small, anchor="mm")
+    return out
+
+
+def render_title(title: str, subtitle: str, out: Path, width: int, height: int, fonts_cfg: dict, mono_family: str) -> None:
+    (tp, big), (sp, small) = _title_layout(title, subtitle, width, height, fonts_cfg, mono_family)
     img = Image.new("RGB", (width, height), BASE)
     d = ImageDraw.Draw(img)
-    d.text((width / 2, height / 2 - round(40 * scale)), title, font=big, fill=TEXT, anchor="mm")
+    d.text(tp, title, font=big, fill=TEXT, anchor="mm")
     if subtitle:
-        d.text((width / 2, height / 2 + round(60 * scale)), subtitle, font=small, fill=SUBTEXT1, anchor="mm")
+        d.text(sp, subtitle, font=small, fill=SUBTEXT1, anchor="mm")
     out.parent.mkdir(parents=True, exist_ok=True)
     img.save(out)

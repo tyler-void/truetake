@@ -175,6 +175,14 @@ def cmd_report(args) -> int:
     return 0
 
 
+def cmd_callouts(args) -> int:
+    from . import callouts
+
+    cfg = _cfg(args)
+    (callouts.preview if args.preview else callouts.render)(cfg)
+    return 0
+
+
 def cmd_build(args) -> int:
     from .assemble import assemble
     from .check import check
@@ -232,6 +240,9 @@ def main(argv: list[str] | None = None) -> int:
                         ("report", cmd_report, "write REPORT.md"),
                         ("build", cmd_build, "narrate, render, assemble, check, report")):
         sub.add_parser(name, help=h).set_defaults(fn=fn)
+    s = sub.add_parser("callouts", help="lay captions and highlight boxes over the assembled video (to a copy)")
+    s.add_argument("--preview", action="store_true", help="only write one frame per callout and a contact sheet")
+    s.set_defaults(fn=cmd_callouts)
 
     args = p.parse_args(argv)
     try:

@@ -26,6 +26,7 @@ One `truetake.yaml` drives eight subcommands:
 | `truetake assemble` | Segments in order, one continuous audio track encoded once, loudness normalised, click test at every join, time budget enforced |
 | `truetake check` | Privacy gate over everything shown or spoken, a frame every N seconds plus contact sheets, card-cover and audio checks |
 | `truetake report` | `REPORT.md`: takes, the chosen one and why, every change to the agent's text, cards, captions, narration, checks |
+| `truetake callouts` | For a live talk: a large caption and a highlight box (or a zoomed copy of a terminal line) per beat, laid over the assembled video into a copy of the same length; `--preview` writes one frame per callout first |
 
 `truetake build` runs narrate, render, assemble, check and report in one go.
 
@@ -140,6 +141,26 @@ top-level `usage_prices`), and a short `title` for the terminal header; a `pair`
 `cols`, `rows`) shows two scenes side by side; title and slide segments take `hold` (seconds on screen when
 there is no narration). See [docs/honesty.md](docs/honesty.md) for what each one changes and how the report
 lists it.
+
+For a talk narrated live, `callouts` lays captions and boxes over the assembled video:
+
+```yaml
+slides: {pdf: slides.pdf, text: slides.text.json}   # text: {page: words}, for PDFs that are pixels only
+callouts:
+  output: demo-cap.mp4                              # never the assembled `output`
+  items:
+    - {from: intro, to: fix, text: The task in one line, boxes: [{segment: intro, text: title}]}
+    - from: fix                                     # seconds, <segment>, <segment>:end, <segment>+<s>, <scene>@<mark>
+      to: fix:end
+      text: It reads the config first
+      boxes: [{scene: fix, line: '^● Read .*config', rows: 1}]   # followed as the terminal scrolls
+      zoom: 1.6                                     # a magnified copy of that line for zoom_seconds (default 8)
+```
+
+A box is a slide rectangle (`segment` + `rect` in output pixels), a title-card line (`segment` + `text`),
+terminal rows matching a regex (`scene` + `line`) or a scene's usage bar (`scene` + `status`). `truetake
+callouts --preview` writes one frame per callout and a contact sheet through the same filter graph as the
+full render; `truetake callouts` writes the copy and checks its length against the source to the frame.
 
 ## Pitfalls
 

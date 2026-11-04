@@ -78,6 +78,19 @@ above the terminal, never in the agent's voice:
 A `pair` segment shows two scenes side by side. Both start together and each keeps its own pace; the shorter
 one holds its last frame. Put the real duration and the shown duration of each in its `label`.
 
+### Callouts
+
+`truetake callouts` is for a talk narrated live. It never touches the assembled video: captions and boxes go
+into a copy (`callouts.output`, refused if it names `output`), the copy keeps the source's length to the frame
+and its audio as is, and nothing is written if the length differs. Each box comes from what truetake rendered,
+not from a guess: a title card's own layout, a slide rectangle from the config, a terminal line found by
+replaying the scene's cast on its scrolling grid (the box follows the line, and is hidden while the line is off
+screen or under the caption), or the usage bar's own position. A caption may only use numbers that are on
+screen while it shows, as digits or as number words: the terminal rows, usage-bar values, step captions and
+labels of that moment, a title card's text, or a slide's text (its PDF text layer, else `slides.text`). A slide
+with neither cannot back a number, so the caption fails rather than passing unread. Captions go through the
+privacy gate, and `callouts.json` records every window, box position, loupe and the numbers checked.
+
 ## Code cards show real code
 
 - The excerpt comes from `git show <commit>:<file>` at a pinned 40-character commit. A branch name or
