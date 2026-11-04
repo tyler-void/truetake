@@ -27,6 +27,7 @@ package metadata, not recalled.
 | [pyte](https://pypi.org/project/pyte/) | the virtual terminal casts are replayed on (card timing, callouts, privacy scan) | LGPL-3.0 | `LICENSE` in the package and its classifier; used unmodified as a library |
 | [kokoro](https://pypi.org/project/kokoro/), optional | local TTS | Apache-2.0 | package metadata; `LICENSE` in hexgrad/kokoro |
 | [soundfile](https://pypi.org/project/soundfile/), optional | audio I/O for Kokoro | BSD-3-Clause | package metadata |
+| [skia-python](https://pypi.org/project/skia-python/), optional (`film` extra) | drawing the film set; it bundles [Skia](https://skia.org), BSD-3-Clause | BSD-3-Clause | package classifier; `LICENSE` in kyamagu/skia-python |
 
 Installed along with `kokoro` (not used by truetake directly):
 - misaki, Apache-2.0 (package metadata);

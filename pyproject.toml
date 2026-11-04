@@ -28,6 +28,7 @@ dependencies = [
 
 [project.optional-dependencies]
 kokoro = ["kokoro>=0.9", "soundfile>=0.12"]
+film = ["skia-python>=87"]
 test = ["pytest>=8"]
 
 [project.scripts]
