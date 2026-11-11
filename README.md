@@ -211,6 +211,21 @@ private text anywhere else stops the film before a frame is drawn. `.truetake/fi
 source, each change to its text, the pacing, the camera and the time map; `cues.json` lists every visible
 event for the score.
 
+### Explainers and the photosensitivity check
+
+`truetake.film.explain` is the stage for explainer films: how a model or pipeline works, module by module, on real
+data. Scenes draw real arrays (images, feature maps as heatmaps, boxes) in a world the camera travels through;
+every frame is a pure function of time, subtitles are held for their reading time, and a cue list goes to
+[truetake-score](https://github.com/tyler-void/truetake-score) (`--style arranged` composes a cue in sections).
+
+`python -m truetake.flash video.mp4` checks any video against WCAG 2.3.1's three-flashes rule: the frame is cut
+into cells about the size of the guideline's small safe area, and any cell flashing (or changing saturated red)
+more than three times in a second fails. It approximates the guideline; it is not a certified Harding test.
+
+`skills/paper-reading` teaches an agent to read a paper before explaining it: three passes, the method in
+execution order, every number with its table, what was released, and what the paper leaves undefined, written
+to `paper.json`.
+
 ## Pitfalls
 
 What goes wrong in practice, and how truetake handles it: MCP tools under `claude -p`, hook output in the
