@@ -1,0 +1,63 @@
+{
+  "paper": {
+    "title": "Vision-Based Anti-UAV Detection and Tracking",
+    "authors": ["Jie Zhao", "Jingshu Zhang", "Dongdong Li", "Dong Wang"],
+    "venue": "IEEE Transactions on Intelligent Transportation Systems, vol. 23, no. 12, pp. 25323-25334",
+    "year": 2022,
+    "doi": "10.1109/TITS.2022.3177627",
+    "arxiv": "2205.10851",
+    "license": "IEEE version: (c) 2022 IEEE, personal use only. arXiv version: CC BY-NC-SA 4.0."
+  },
+  "claim": "Existing deep detectors and trackers, retrained or run on a dedicated visible-light UAV dataset and fused with a simple score-gated rule, track UAVs much better than trackers alone.",
+  "problem": "UAVs in video are tiny, blend into complex backgrounds and get occluded, so generic trackers lose them.",
+  "contributions": [
+    {"kind": "data", "text": "DUT Anti-UAV: a detection set of 10,000 images (5,200 train, 2,600 val, 2,200 test) and a tracking set of 20 hand-annotated videos (Sec. I, III)."},
+    {"kind": "benchmark", "text": "14 detectors (Faster-RCNN, Cascade-RCNN, ATSS, YOLOX, SSD with ResNet18/50, VGG16, DarkNet backbones) retrained on the dataset, and 8 trackers evaluated (Sec. IV-A, IV-B; Tables II, III)."},
+    {"kind": "method", "text": "A fusion strategy of tracking and detection: the detector is consulted when the tracker's score falls below a threshold, and its best box replaces the tracker's when it is confident enough (Sec. IV-C, Fig. 7, Algorithm 1)."}
+  ],
+  "modules": [
+    {"name": "Tracker initialisation", "order": 1, "input": "first frame and its ground-truth box GT0", "output": "tracker state", "sizes": [], "defined_by": "Sec. IV-C, Algorithm 1", "parallel_with": []},
+    {"name": "Tracker", "order": 2, "input": "frame t", "output": "bbox_t, score_t", "sizes": ["SiamFC: exemplar 127x127, search 255x255, response 17x17 (derived from SiamFC, not stated in this paper)"], "defined_by": "Sec. IV-B (trackers are existing methods); Algorithm 1", "parallel_with": []},
+    {"name": "Score gate", "order": 3, "input": "score_t", "output": "keep bbox_t, or call the detector", "sizes": [], "defined_by": "Algorithm 1: score_t < tau_t", "parallel_with": []},
+    {"name": "Detector", "order": 4, "input": "frame t", "output": "bboxes_d, scores_d", "sizes": ["Faster-RCNN ResNet50: backbone strides 4/8/16/32, FPN levels P2-P6 (derived from the architecture, not stated in this paper)"], "defined_by": "Sec. IV-A (detectors are existing methods, retrained on the dataset)", "parallel_with": []},
+    {"name": "Fusion decision", "order": 5, "input": "bbox_t, score_t, bboxes_d, scores_d", "output": "R_T, the box for frame t", "sizes": [], "defined_by": "Algorithm 1: if max(scores_d) > tau_d and > score_t then R_T = bbox_d else R_T = bbox_t", "parallel_with": []}
+  ],
+  "equations": [
+    {"id": "Alg. 1 gate", "tex": "\\text{score}_t < \\tau_t", "symbols": {"score_t": "tracker confidence on frame t", "tau_t": "tracker threshold, 0.9"}, "where": "Sec. IV-C, Fig. 7"},
+    {"id": "Alg. 1 choice", "tex": "R_T = \\begin{cases} \\text{bbox}_d & \\text{score}_d > \\tau_d \\wedge \\text{score}_d > \\text{score}_t \\\\ \\text{bbox}_t & \\text{otherwise} \\end{cases}", "symbols": {"score_d": "highest detector score on frame t", "bbox_d": "its box", "tau_d": "detector threshold, 0.9", "R_T": "result for frame t"}, "where": "Sec. IV-C, Fig. 7"}
+  ],
+  "hyperparameters": [
+    {"name": "tau_t, tau_d", "value": "0.9", "quote": "In this paper, hyper-parameters τt and τd are set to 0.9.", "where": "Sec. IV-C"},
+    {"name": "sensitivity", "value": "< 1% change in Success", "quote": "huge changes in parameters τt and τd only cause slight fluctuations in the tracking results (less than 1%).", "where": "Sec. IV-C, Fig. 8"}
+  ],
+  "numbers": [
+    {"value": "10,000 / 5,200 / 2,600 / 2,200", "meaning": "detection images: total / train / val / test", "where": "Sec. I contributions"},
+    {"value": "20", "meaning": "tracking videos", "where": "Abstract, Sec. I"},
+    {"value": "1.9e-06", "meaning": "smallest object area ratio in the detection set", "where": "Sec. III-B"},
+    {"value": "0.0031", "meaning": "average object area ratio in the tracking set", "where": "Sec. III-B"},
+    {"value": "0.381 / 0.526 / 0.623", "meaning": "SiamFC alone: Success / Norm Pre / Precision", "where": "Table III, row SiamFC, column noDET"},
+    {"value": "0.616 / 0.804 / 0.937", "meaning": "SiamFC fused with Faster-RCNN ResNet50: Success / Norm Pre / Precision", "where": "Table III, row SiamFC, column Faster-RCNN ResNet50"},
+    {"value": "23.4%", "meaning": "Success gain of SiamFC + Faster-RCNN(VGG16) over SiamFC", "where": "Sec. IV-C"},
+    {"value": "0.608", "meaning": "LTMU Success, best tracker without detection", "where": "Sec. IV-B, Table III"},
+    {"value": "0.664 / 0.865 / 0.961", "meaning": "best combination, LTMU + Faster-RCNN VGG16: Success / Norm Pre / Precision", "where": "Table III, red"}
+  ],
+  "released": {
+    "code": "No code for the fusion or the retrained detectors; the repository lists the dataset and references (github.com/wangdongdut/DUT-Anti-UAV, Apache-2.0).",
+    "weights": "None released.",
+    "data": "Detection and tracking sets on Google Drive and Baidu, with annotations.",
+    "licenses": "Repository Apache-2.0; the paper states the dataset is for academic research."
+  },
+  "gaps": [
+    {"what": "How score_t is computed for each tracker", "why_it_matters": "The gate compares it with 0.9; SiamFC's raw response is not a probability.", "our_assumption": "score_t = sigmoid of the peak of SiamFC's response map; stated on screen."},
+    {"what": "Whether the tracker continues from R_T after a detector box is chosen", "why_it_matters": "Decides where the tracker searches on the next frame.", "our_assumption": "The tracker's state is moved to R_T (its centre and size), so the next search is around the chosen box; stated on screen."},
+    {"what": "Detector input size and NMS settings used in retraining", "why_it_matters": "Affects the sizes shown on screen.", "our_assumption": "Not applicable to our run: we use torchvision's defaults for its COCO model and show those real sizes."}
+  ],
+  "figures_to_redraw": [
+    {"figure": "Fig. 7", "why": "The framework of the fusion: the film's minimap and scene 2.", "license_note": "Redraw with our real frames; cite arXiv 2205.10851 (CC BY-NC-SA 4.0)."}
+  ],
+  "our_substitutes": [
+    {"for": "the paper's retrained Faster-RCNN ResNet50", "use": "torchvision fasterrcnn_resnet50_fpn with COCO weights", "label_on_screen": "Same architecture, COCO weights, not retrained on DUT Anti-UAV"},
+    {"for": "the paper's SiamFC run", "use": "SiamFC with public pretrained weights", "label_on_screen": "Public SiamFC weights"},
+    {"for": "the paper's fusion code", "use": "our re-implementation of Algorithm 1", "label_on_screen": "Algorithm 1, re-implemented from the paper"}
+  ]
+}

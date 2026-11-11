@@ -12,6 +12,7 @@ build/
 hello-demo/
 *.mp4
 *.gif
+!docs/media/*.gif
 *.cast
 bare-c-demo/
 anti-uav-demo/

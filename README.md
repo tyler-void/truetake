@@ -2,6 +2,11 @@
 
 **Real agent takes, turned into honest demo videos.**
 
+![A frame of a drone video shrinking through ResNet-50's stages, from 192×336 to 24×42, with the drone boxed on every map](docs/media/explainer-backbone.gif)
+
+<sub>From the [anti-UAV explainer](examples/anti-uav-explainer/): one real frame through a detector, every map a real
+intermediate. Dataset: DUT Anti-UAV (Zhao et al., IEEE T-ITS 2022), for academic research.</sub>
+
 truetake records fresh takes of a coding agent (Claude Code headless first), keeps every take as evidence,
 and builds a narrated demo video with verbatim agent text, code cards from the repository, step captions,
 and privacy checks before anything is rendered.
@@ -217,6 +222,12 @@ event for the score.
 data. Scenes draw real arrays (images, feature maps as heatmaps, boxes) in a world the camera travels through;
 every frame is a pure function of time, subtitles are held for their reading time, and a cue list goes to
 [truetake-score](https://github.com/tyler-void/truetake-score) (`--style arranged` composes a cue in sections).
+
+![The camera pulls back from a close-up of a drone to reveal the whole frame](docs/media/explainer-opening.gif)
+![The paper's rule with real numbers: 0.949 beats 0.9 and 0.868, so the detector's box becomes the result](docs/media/explainer-rule.gif)
+
+The [anti-UAV explainer](examples/anti-uav-explainer/) is a worked example: a detection-and-tracking paper,
+module by module, with nothing trained and every substitute named on screen.
 
 `python -m truetake.flash video.mp4` checks any video against WCAG 2.3.1's three-flashes rule: the frame is cut
 into cells about the size of the guideline's small safe area, and any cell flashing (or changing saturated red)
